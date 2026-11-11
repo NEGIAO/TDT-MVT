@@ -1,0 +1,16 @@
+services:
+  tianditu-mvt-service:
+    build: .
+    container_name: tdt-mvt-proxy
+    restart: unless-stopped
+    ports:
+      - "8890:8890"
+    environment:
+      - PORT=8890
+      - TDT_TK=b88bfb160c81dab8d9d20aaa74846360
+      - NODE_ENV=production
+    volumes:
+      # 将切片缓存目录挂载至主机，避免容器重启缓存丢失
+      - ./cache:/app/cache
+      # 挂载自定义样式配置目录
+      - ./static/custom-theme-config.json:/app/static/custom-theme-config.json

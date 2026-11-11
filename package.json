@@ -1,0 +1,33 @@
+{
+  "name": "tianditu-vector-mvt",
+  "version": "1.0.0",
+  "description": "天地图官方矢量切片解码解密、样式解耦与标准化 MVT 服务（支持方案一前端直连与方案二本地/VPS代理中转，原生支持 OpenLayers、MapLibre、QGIS 与 ArcGIS Pro）",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "build:codec": "node build_browser_codec.mjs",
+    "build:styles": "node style_generator.mjs",
+    "build:all": "node build_browser_codec.mjs && node style_generator.mjs",
+    "clean:cache": "node -e \"import fs from 'fs'; const d='./cache'; if(fs.existsSync(d)){ fs.readdirSync(d).forEach(f=>fs.unlinkSync(d+'/'+f)); console.log('瓦片磁盘缓存已清理'); }\"",
+    "docker:build": "docker build -t tianditu-vector-mvt .",
+    "docker:up": "docker-compose up -d"
+  },
+  "keywords": [
+    "tianditu",
+    "openlayers",
+    "mvt",
+    "mapbox-vector-tile",
+    "maplibre",
+    "qgis",
+    "arcgis-pro",
+    "pbf",
+    "gis"
+  ],
+  "author": "NEGIAO",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

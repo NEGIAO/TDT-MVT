@@ -1,0 +1,3654 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>天地图矢量切片解耦平台 - 方案一直连与方案二本地代理双轨支持</title>
+  
+  <!-- MapLibre GL JS -->
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+
+  <!-- 天地图纯前端直连解码转码器 (实现前端直连官方并规避 400 错误) -->
+  <script src="static/tdt_browser_codec.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      /* Claude Code Light Theme Palette */
+      --bg-canvas: #FAF8F5;
+      --bg-panel: rgba(253, 251, 247, 0.94);
+      --bg-panel-solid: #FDFBF7;
+      --bg-card: #FFFFFF;
+      --bg-muted: #F5F2EB;
+      --bg-subtle: #EFECE6;
+      --bg-hover: #F3EFE9;
+      
+      --border-light: #EFECE6;
+      --border-subtle: #E5E0D8;
+      --border-hover: #D5CFC4;
+      
+      --text-primary: #1F1E1D;
+      --text-secondary: #5C564E;
+      --text-muted: #8C867E;
+      --text-subtle: #A39D94;
+      
+      /* Claude Signature Terracotta Accent */
+      --claude-accent: #D97757;
+      --claude-accent-hover: #C96748;
+      --claude-accent-deep: #B84E32;
+      --claude-accent-light: #FAF0EB;
+      --claude-accent-border: #F0C4B4;
+      
+      /* Status Palette */
+      --status-ok-bg: #EEF4F0;
+      --status-ok-text: #2B603A;
+      --status-ok-border: #CCE2D3;
+      --status-ok-dot: #3E7B54;
+      
+      --status-err-bg: #FDF0EE;
+      --status-err-text: #B9382B;
+      --status-err-border: #F8CECA;
+      --status-err-dot: #D33C2E;
+      
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      
+      --shadow-sm: 0 1px 2px rgba(35, 30, 25, 0.05);
+      --shadow-md: 0 2px 8px rgba(35, 30, 25, 0.06);
+      --shadow-lg: 0 1px 3px rgba(35, 30, 25, 0.04), 0 12px 32px -4px rgba(35, 30, 25, 0.08);
+    }
+
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--font-sans);
+      color: var(--text-primary);
+      background: var(--bg-canvas);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    input[type="checkbox"] {
+      accent-color: var(--claude-accent);
+      cursor: pointer;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #DDD7CE;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #C4BEB4;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background: var(--bg-canvas);
+    }
+
+    /* 顶部主控制面板 - Claude Light Refined Style */
+    .top-panel {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 20;
+      background: var(--bg-panel);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-radius: 14px;
+      box-shadow: var(--shadow-lg);
+      border: 1px solid var(--border-subtle);
+      width: 440px;
+      max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 32px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.22s ease, visibility 0.28s;
+    }
+
+    /* 整体折叠态 */
+    .top-panel.collapsed {
+      transform: translateX(-470px);
+      opacity: 0;
+      pointer-events: none;
+      visibility: hidden;
+    }
+
+    /* 浮动展开触发胶囊 (面板折叠后显示在左上角) */
+    .panel-expand-trigger {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 19;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      background: var(--bg-panel);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      box-shadow: var(--shadow-md);
+      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      user-select: none;
+    }
+    .panel-expand-trigger:hover {
+      background: var(--bg-card);
+      border-color: var(--claude-accent-border);
+      color: var(--claude-accent-deep);
+      box-shadow: var(--shadow-lg);
+      transform: translateY(-1px);
+    }
+    body.panel-is-collapsed .panel-expand-trigger {
+      display: inline-flex;
+      animation: triggerSlideIn 0.22s ease-out;
+    }
+    @keyframes triggerSlideIn {
+      from { opacity: 0; transform: translateX(-16px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .trigger-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      background: var(--claude-accent-light);
+      color: var(--claude-accent);
+    }
+    .trigger-badge {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      background: var(--bg-subtle);
+      padding: 1px 6px;
+      border-radius: 10px;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-subtle);
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--status-ok-dot);
+      box-shadow: 0 0 0 2px rgba(62, 123, 84, 0.2);
+    }
+
+    /* 内部滚动与间距容器 */
+    .top-panel-inner {
+      padding: 14px 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* 顶栏头部行 */
+    .panel-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .brand-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: var(--claude-accent-light);
+      border: 1px solid var(--claude-accent-border);
+      color: var(--claude-accent);
+      flex-shrink: 0;
+    }
+    .brand-icon svg {
+      width: 13px;
+      height: 13px;
+    }
+    .brand-text {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.2px;
+    }
+    .brand-badge {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+      color: var(--claude-accent-deep);
+      background: var(--claude-accent-light);
+      border: 1px solid var(--claude-accent-border);
+      padding: 1px 5px;
+      border-radius: 4px;
+      letter-spacing: 0.3px;
+    }
+
+    /* 收起面板按钮 */
+    .collapse-toggle-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      padding: 3px 7px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      user-select: none;
+    }
+    .collapse-toggle-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+
+    /* 快捷工具栏 */
+    .panel-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+    .toolbar-btn {
+      flex: 1;
+      font-size: 11px;
+      padding: 5px 6px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      background: var(--bg-card);
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .toolbar-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+    .toolbar-btn.highlight {
+      background: var(--claude-accent-light);
+      border-color: var(--claude-accent-border);
+      color: var(--claude-accent-deep);
+      font-weight: 600;
+    }
+    .toolbar-btn.highlight:hover {
+      background: #F5E3D8;
+    }
+
+    /* 状态指示徽标 */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10.5px;
+      font-weight: 500;
+      padding: 2px 7px;
+      border-radius: 999px;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+    .status-badge::before {
+      content: "";
+      width: 5.5px;
+      height: 5.5px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-badge.status-ok {
+      background: var(--status-ok-bg);
+      color: var(--status-ok-text);
+      border: 1px solid var(--status-ok-border);
+    }
+    .status-badge.status-ok::before {
+      background: var(--status-ok-dot);
+      box-shadow: 0 0 0 2px rgba(62, 123, 84, 0.2);
+    }
+    .status-badge.status-direct {
+      background: var(--claude-accent-light);
+      color: var(--claude-accent-deep);
+      border: 1px solid var(--claude-accent-border);
+    }
+    .status-badge.status-direct::before {
+      background: var(--claude-accent);
+      box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.25);
+    }
+    .status-badge.status-error {
+      background: var(--status-err-bg);
+      color: var(--status-err-text);
+      border: 1px solid var(--status-err-border);
+    }
+    .status-badge.status-error::before {
+      background: var(--status-err-dot);
+      box-shadow: 0 0 0 2px rgba(211, 60, 46, 0.2);
+    }
+
+    /* 方案模式切换器 - Claude Code 风格 Segmented Controls */
+    .mode-tabs {
+      display: flex;
+      gap: 3px;
+      background: var(--bg-subtle);
+      padding: 3px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .mode-tab {
+      flex: 1;
+      border: 1px solid transparent;
+      background: transparent;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .mode-tab:hover {
+      color: var(--text-primary);
+    }
+    .mode-tab.active {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      font-weight: 600;
+      border-color: var(--border-subtle);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* 方案一直连提示与配置框 - Claude Editorial Callout */
+    .direct-config-box {
+      background: #FAF6F0;
+      border: 1px solid #E8DFD2;
+      border-radius: 8px;
+      padding: 9px 11px;
+    }
+    .direct-callout {
+      border-left: 3px solid var(--claude-accent);
+      padding-left: 8px;
+      margin-bottom: 8px;
+    }
+    .direct-callout-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .callout-badge {
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      font-weight: 700;
+      color: var(--claude-accent-deep);
+      background: var(--claude-accent-light);
+      border: 1px solid var(--claude-accent-border);
+      padding: 0 4px;
+      border-radius: 3px;
+    }
+    .callout-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--claude-accent-deep);
+    }
+    .direct-callout-body {
+      font-size: 10.5px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    .direct-callout-body code {
+      font-family: var(--font-mono);
+      background: var(--bg-subtle);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 9.5px;
+      color: var(--text-primary);
+      border: 1px solid var(--border-subtle);
+    }
+    .direct-token-row {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+    .claude-input {
+      flex: 1;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      padding: 4px 8px;
+      border: 1px solid #DDD7CE;
+      background: var(--bg-card);
+      border-radius: 6px;
+      outline: none;
+      color: var(--text-primary);
+      transition: all 0.15s ease;
+    }
+    .claude-input:focus {
+      border-color: var(--claude-accent);
+      box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.18);
+    }
+    .claude-btn-primary {
+      font-size: 10.5px;
+      font-weight: 600;
+      padding: 4px 9px;
+      border: 1px solid var(--claude-accent);
+      background: var(--claude-accent);
+      color: #FFFFFF;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .claude-btn-primary:hover {
+      background: var(--claude-accent-hover);
+      border-color: var(--claude-accent-hover);
+    }
+    .claude-btn-subtle {
+      font-size: 10.5px;
+      font-weight: 500;
+      padding: 4px 9px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .claude-btn-subtle:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+
+    /* 主题预设 3x2 网格 */
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      letter-spacing: 0.1px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .theme-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      background: var(--bg-subtle);
+      padding: 3px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .theme-btn {
+      border: 1px solid transparent;
+      background: transparent;
+      padding: 5px 4px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      white-space: nowrap;
+    }
+    .theme-btn:hover {
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--text-primary);
+    }
+    .theme-btn.active {
+      background: var(--bg-card);
+      color: var(--claude-accent-deep);
+      font-weight: 600;
+      border-color: var(--claude-accent-border);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* 分类快捷开关 */
+    .section-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .section-title {
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-weight: 600;
+      letter-spacing: 0.1px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .mini-btn {
+      font-size: 10px;
+      padding: 2px 7px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .mini-btn:hover {
+      border-color: var(--claude-accent-border);
+      color: var(--claude-accent-deep);
+      background: var(--claude-accent-light);
+    }
+
+    .category-chips-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .layer-chip {
+      font-size: 10.5px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      cursor: pointer;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+    .layer-chip:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-hover);
+      color: var(--text-primary);
+    }
+    .layer-chip.active {
+      background: var(--claude-accent-light);
+      border-color: var(--claude-accent-border);
+      color: var(--claude-accent-deep);
+      font-weight: 600;
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* 展开折叠细粒度图层树按钮 */
+    .tree-toggle-header {
+      background: var(--bg-panel-solid);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: var(--text-primary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      user-select: none;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+    .tree-toggle-header:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-hover);
+    }
+    .counter-badge {
+      background: var(--bg-subtle);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 7px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    /* 图层树容器 */
+    .layer-tree-panel {
+      overflow-y: auto;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: var(--bg-canvas);
+      padding: 6px 8px;
+      max-height: 250px;
+      margin-bottom: 6px;
+    }
+
+    .tree-search-box {
+      width: 100%;
+      padding: 5px 8px;
+      font-size: 11px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      border-radius: 5px;
+      margin-bottom: 6px;
+      outline: none;
+      color: var(--text-primary);
+      transition: all 0.15s ease;
+    }
+    .tree-search-box::placeholder {
+      color: var(--text-subtle);
+    }
+    .tree-search-box:focus {
+      border-color: var(--claude-accent);
+      box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.18);
+    }
+
+    /* 分类树节点 */
+    .cat-group {
+      margin-bottom: 4px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--bg-card);
+    }
+    .cat-group-header {
+      background: var(--bg-muted);
+      padding: 5px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--text-primary);
+      transition: background 0.15s ease;
+    }
+    .cat-group-header:hover {
+      background: var(--bg-hover);
+    }
+    .cat-header-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .cat-arrow {
+      font-size: 8.5px;
+      color: var(--text-subtle);
+      transition: transform 0.2s ease;
+      display: inline-block;
+    }
+    .cat-arrow.open {
+      transform: rotate(90deg);
+    }
+    .cat-count-badge {
+      font-size: 9.5px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+    .cat-item-list {
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-card);
+      border-top: 1px solid var(--border-light);
+      padding: 2px 0;
+    }
+
+    .layer-item-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 3px 8px 3px 18px;
+      font-size: 10.5px;
+      color: var(--text-secondary);
+      border-bottom: 1px solid #FAF7F2;
+      transition: background 0.15s ease;
+    }
+    .layer-item-row:hover {
+      background: var(--bg-muted);
+    }
+    .layer-item-row:last-child {
+      border-bottom: none;
+    }
+    .layer-item-left {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sl-code {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      font-weight: 600;
+      background: var(--bg-muted);
+      color: var(--text-primary);
+      padding: 1px 4px;
+      border-radius: 3px;
+      border: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .sl-name {
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .layer-item-right {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .geom-tag {
+      font-size: 9px;
+      padding: 0 4px;
+      border-radius: 3px;
+      background: var(--bg-subtle);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-subtle);
+    }
+    .layer-count-tag {
+      font-size: 9.5px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+    .field-hint-text {
+      font-size: 9px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      margin-left: 2px;
+    }
+
+    /* 状态面板与刷新 */
+    .stats-bar {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      border-top: 1px solid var(--border-light);
+      padding-top: 6px;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .reload-btn {
+      margin-top: 6px;
+      width: 100%;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-panel-solid);
+      color: var(--text-primary);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+    .reload-btn:hover {
+      background: var(--claude-accent-light);
+      border-color: var(--claude-accent-border);
+      color: var(--claude-accent-deep);
+    }
+
+    /* 右侧要素探查与实时样式修改浮窗 - Claude Editorial Detail Panel */
+    .inspector-panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      z-index: 10;
+      background: var(--bg-panel);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      padding: 14px 16px;
+      border-radius: 12px;
+      box-shadow: var(--shadow-lg);
+      border: 1px solid var(--border-subtle);
+      width: 420px;
+      max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      display: none;
+    }
+    .inspector-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--border-light);
+      padding-bottom: 8px;
+    }
+    .inspector-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .inspector-close {
+      cursor: pointer;
+      font-size: 18px;
+      color: var(--text-muted);
+      border: none;
+      background: none;
+      padding: 0 4px;
+      line-height: 1;
+      border-radius: 4px;
+      transition: color 0.15s ease;
+    }
+    .inspector-close:hover {
+      color: var(--text-primary);
+    }
+
+    /* 选项卡切换器 */
+    .inspector-tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--bg-subtle);
+      padding: 3px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border-subtle);
+    }
+    .inspector-tab {
+      flex: 1;
+      padding: 5px 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .inspector-tab:hover {
+      color: var(--text-primary);
+    }
+    .inspector-tab.active {
+      background: var(--bg-card);
+      color: var(--claude-accent-deep);
+      border-color: var(--border-subtle);
+      box-shadow: var(--shadow-sm);
+    }
+    .tab-pane {
+      display: none;
+    }
+    .tab-pane.active {
+      display: block;
+    }
+
+    /* 图层树中 74 个子图层与 529 个具体样式层交互控件 */
+    .sl-expand-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 8px;
+      color: var(--text-muted);
+      padding: 0 3px;
+      line-height: 1;
+      transition: transform 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .sl-expand-btn.open {
+      transform: rotate(90deg);
+    }
+    .sl-style-btn {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      line-height: 1;
+      transition: all 0.15s ease;
+      padding: 0;
+    }
+    .sl-style-btn:hover {
+      background: var(--claude-accent-light);
+      border-color: var(--claude-accent-border);
+      color: var(--claude-accent-deep);
+      transform: scale(1.12);
+    }
+
+    /* 第三级：具体样式层条目 (全部 529 层) */
+    .style-layer-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 4px 0 6px 18px;
+      margin-top: 2px;
+      margin-bottom: 4px;
+      border-left: 2px solid var(--border-light);
+    }
+    .style-layer-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 6px;
+      border-radius: 4px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      font-size: 10.5px;
+      transition: all 0.15s ease;
+    }
+    .style-layer-row:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-hover);
+    }
+    .style-layer-row.active-editing {
+      border-color: var(--claude-accent);
+      background: var(--claude-accent-light);
+    }
+    .style-layer-left {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .style-swatch-mini {
+      width: 11px;
+      height: 11px;
+      border-radius: 3px;
+      border: 1px solid rgba(0,0,0,0.18);
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .style-layer-id {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 10px;
+      color: var(--claude-accent-deep);
+      flex-shrink: 0;
+    }
+    .style-layer-role {
+      font-size: 9.5px;
+      color: var(--text-secondary);
+      background: var(--bg-subtle);
+      padding: 1px 4px;
+      border-radius: 3px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .style-layer-right {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .zoom-badge {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-muted);
+      background: var(--bg-subtle);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    .layer-item-style-btn {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      padding: 0;
+      transition: all 0.15s ease;
+    }
+    .layer-item-style-btn:hover {
+      background: var(--claude-accent-light);
+      border-color: var(--claude-accent-border);
+      color: var(--claude-accent-deep);
+      transform: scale(1.15);
+    }
+
+    /* 样式编辑器卡片与控件 */
+    .style-editor-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .style-target-header {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-light);
+    }
+    .style-target-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .style-control-group {
+      margin-bottom: 10px;
+    }
+    .style-control-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .style-color-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .style-color-input {
+      width: 36px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      cursor: pointer;
+      background: transparent;
+      outline: none;
+      flex-shrink: 0;
+    }
+    .style-text-input {
+      flex: 1;
+      height: 30px;
+      padding: 3px 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      background: var(--bg-panel-solid);
+      color: var(--text-primary);
+    }
+    .style-text-input:focus {
+      border-color: var(--claude-accent);
+      outline: none;
+    }
+    .style-slider-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .style-slider {
+      flex: 1;
+      accent-color: var(--claude-accent);
+      cursor: pointer;
+      height: 5px;
+    }
+    .style-val-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      min-width: 44px;
+      text-align: right;
+    }
+    .swatches-grid {
+      display: flex;
+      gap: 5px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .style-swatch {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 0, 0, 0.15);
+      cursor: pointer;
+      transition: transform 0.1s ease;
+    }
+    .style-swatch:hover {
+      transform: scale(1.18);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+    }
+
+    .style-actions-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .style-btn {
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-subtle);
+      color: var(--text-primary);
+      padding: 6px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+    .style-btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-hover);
+    }
+    .style-btn.primary {
+      background: var(--claude-accent);
+      border-color: var(--claude-accent);
+      color: #FFFFFF;
+      grid-column: span 2;
+    }
+    .style-btn.primary:hover {
+      background: var(--claude-accent-hover);
+    }
+    .style-toast {
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      margin-top: 8px;
+      display: none;
+      line-height: 1.4;
+    }
+    .style-toast.success {
+      background: var(--status-ok-bg);
+      color: var(--status-ok-text);
+      border: 1px solid var(--status-ok-border);
+    }
+    .style-toast.error {
+      background: var(--status-err-bg);
+      color: var(--status-err-text);
+      border: 1px solid var(--status-err-border);
+    }
+    .prop-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 11px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid var(--border-subtle);
+    }
+    .prop-table th, .prop-table td {
+      border-bottom: 1px solid var(--border-light);
+      border-right: 1px solid var(--border-light);
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .prop-table tr:last-child th,
+    .prop-table tr:last-child td {
+      border-bottom: none;
+    }
+    .prop-table td:last-child,
+    .prop-table th:last-child {
+      border-right: none;
+    }
+    .prop-table th {
+      background: var(--bg-muted);
+      color: var(--text-secondary);
+      font-weight: 600;
+      width: 44%;
+    }
+    .prop-table td {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      word-break: break-all;
+    }
+    .field-zh {
+      font-weight: 600;
+      color: var(--claude-accent-deep);
+    }
+    .field-raw {
+      font-size: 9.5px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    /* MapLibre 控件的浅色暖调适配 */
+    .maplibregl-ctrl-group {
+      background: var(--bg-panel-solid) !important;
+      border: 1px solid var(--border-subtle) !important;
+      box-shadow: var(--shadow-sm) !important;
+      border-radius: 8px !important;
+      overflow: hidden;
+    }
+    .maplibregl-ctrl-group button {
+      border-bottom: 1px solid var(--border-light) !important;
+    }
+    .maplibregl-ctrl-group button:last-child {
+      border-bottom: none !important;
+    }
+    .maplibregl-ctrl-group button:hover {
+      background-color: var(--bg-hover) !important;
+    }
+    .maplibregl-ctrl-scale {
+      background: rgba(250, 248, 245, 0.9) !important;
+      border: 2px solid var(--text-secondary) !important;
+      border-top: none !important;
+      color: var(--text-primary) !important;
+      font-family: var(--font-mono) !important;
+      font-size: 10px !important;
+      border-radius: 0 0 3px 3px !important;
+    }
+
+    /* GIS Integration Modal - Claude Code Light Aesthetic */
+    .gis-modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(35, 30, 25, 0.45);
+      backdrop-filter: blur(4px);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .gis-modal-card {
+      width: 580px;
+      max-width: 92vw;
+      max-height: 85vh;
+      background: var(--bg-card);
+      border-radius: 12px;
+      box-shadow: var(--shadow-lg);
+      border: 1px solid var(--border-subtle);
+      overflow-y: auto;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+    }
+    .gis-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 14px;
+    }
+    .gis-modal-title h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 4px 0 0 0;
+      color: var(--text-primary);
+    }
+    .gis-modal-tabs {
+      display: flex;
+      gap: 6px;
+      background: var(--bg-subtle);
+      padding: 4px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border-subtle);
+    }
+    .gis-tab-btn {
+      flex: 1;
+      padding: 6px 10px;
+      font-size: 11.5px;
+      font-weight: 500;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .gis-tab-btn.active {
+      background: var(--bg-card);
+      color: var(--claude-accent-deep);
+      font-weight: 600;
+      box-shadow: var(--shadow-sm);
+    }
+    .gis-pane {
+      display: none;
+    }
+    .gis-pane.active {
+      display: block;
+    }
+    .code-copy-row {
+      margin-bottom: 8px;
+    }
+    .code-copy-row label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+    .copy-input-group {
+      display: flex;
+      gap: 6px;
+    }
+    .copy-input-group input {
+      flex: 1;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-canvas);
+      color: var(--text-primary);
+    }
+    .copy-btn {
+      padding: 6px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--claude-accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      white-space: nowrap;
+    }
+    .copy-btn:hover {
+      background: var(--claude-accent-hover);
+    }
+    .code-block {
+      background: var(--bg-canvas);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-primary);
+      overflow-x: auto;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <!-- 浮动展开胶囊按钮 (面板折叠时显示在左上角) -->
+  <button class="panel-expand-trigger" id="expandPanelBtn" title="展开控制面板 (快捷键: [ 或 \)">
+    <span class="trigger-icon">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+        <line x1="9" y1="3" x2="9" y2="21"/>
+      </svg>
+    </span>
+    <span>控制面板</span>
+    <span class="trigger-badge" id="expandTriggerBadge">529层</span>
+    <span class="status-dot"></span>
+  </button>
+
+  <!-- 顶部主控制面板 (支持整体平滑折叠) -->
+  <div class="top-panel" id="topPanel">
+    <div class="top-panel-inner">
+      <!-- 1. 顶栏头部：品牌标识、状态指示与收起按钮 -->
+      <div class="panel-header-row">
+        <div class="brand-group">
+          <span class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2v20M2 12h20M4.93 4.93l14.14 14.14M19.07 4.93L4.93 19.07" stroke="#D97757"/>
+            </svg>
+          </span>
+          <span class="brand-text">天地图矢量切片</span>
+          <span class="brand-badge">CLAUDE</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span class="status-badge status-ok" id="proxyStatus">代理正常</span>
+          <button class="collapse-toggle-btn" id="collapsePanelBtn" title="折叠面板，畅览全屏地图 (快捷键: [ )">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+            <span>收起</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 2. 快捷操作工具栏 -->
+      <div class="panel-toolbar">
+        <button class="toolbar-btn" id="openEndpointModalBtn" title="配置本地或远程代理节点地址">
+          ⚙️ 节点设置
+        </button>
+        <button class="toolbar-btn highlight" id="openGisModalBtn" title="查看 OpenLayers、QGIS 与 ArcGIS Pro 接入代码及一键图层文件">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          GIS / OL 接入
+        </button>
+        <button class="toolbar-btn" id="toggle3dBtn" title="切换 2D 平面 / 2.5D 倾斜立体楼宇俯仰角 (Ctrl+右键拖动也可自由倾斜)">
+          🏢 2.5D 立体
+        </button>
+        <button class="toolbar-btn" id="reloadTilesBtn" title="强制清空视图重载切片">
+          🔄 刷新切片
+        </button>
+        <a href="https://github.com/NEGIAO" target="_blank" class="toolbar-btn" title="查看 GitHub 源码">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+      </div>
+
+      <!-- 3. 运行方案切换 -->
+      <div class="mode-tabs">
+        <button class="mode-tab active" id="modeProxyBtn" data-mode="proxy">
+          🚀 方案二：本地代理中转 (推荐)
+        </button>
+        <button class="mode-tab" id="modeDirectBtn" data-mode="direct">
+          ⚡ 方案一：官方前端直连
+        </button>
+      </div>
+
+      <!-- 方案一直连专属配置框 -->
+      <div id="directConfigPanel" class="direct-config-box" style="display: none;">
+        <div class="direct-callout">
+          <div class="direct-callout-header">
+            <span class="callout-badge">DIRECT PROTOCOL</span>
+            <span class="callout-title">纯前端直连模式（已规避 400 错误）</span>
+          </div>
+          <div class="direct-callout-body">
+            1. 浏览器已挂载 <code>tdt-direct://</code> 协议引擎，前端实时将 <code>{z}/{x}/{y}</code> 换算为 <code>pk</code> 空间编码并向官方 CDN 请求。<br>
+            2. 💡 <b>性能说明</b>：浏览器需在内存中同时解码 TVT 并转码为 MVT，重负荷下较耗 CPU；<b>强烈推荐【方案二：本地代理中转】</b>，享有磁盘 0ms 闪电缓存。
+          </div>
+        </div>
+        <div class="direct-token-row">
+          <input type="text" id="directTokenInput" placeholder="输入您的天地图 Token (tk)" value="b88bfb160c81dab8d9d20aaa74846360" class="claude-input">
+          <button id="applyDirectTokenBtn" class="claude-btn-primary">应用 Key</button>
+          <button id="quickBackToProxyBtn" class="claude-btn-subtle">切回方案二</button>
+        </div>
+      </div>
+
+      <!-- 4. 主题切换 (精美 3x2 网格) -->
+      <div class="section-label">🎨 矢量地图预设风格</div>
+      <div class="theme-grid">
+        <button class="theme-btn active" data-theme="default">🌞 官方原版</button>
+        <button class="theme-btn" data-theme="google">🌍 谷歌清新</button>
+        <button class="theme-btn" data-theme="amap">🧭 高德素雅</button>
+        <button class="theme-btn" data-theme="dark">🌙 暗夜黑金</button>
+        <button class="theme-btn" data-theme="tech-blue">🌐 科技深蓝</button>
+        <button class="theme-btn" data-theme="custom" id="customThemeBtn">🎨 自定义主题</button>
+      </div>
+
+      <!-- 5. 9 大分类快捷总控 -->
+      <div class="section-title-row">
+        <div class="section-title">🗺️ 图层速控 (9大类)</div>
+        <div style="display: flex; gap: 4px;">
+          <button id="showAllLayersBtn" class="mini-btn">全部开启</button>
+          <button id="hideAllLayersBtn" class="mini-btn">全部隐藏</button>
+        </div>
+      </div>
+      <div class="layers-toggle category-chips-wrap" id="categoryChips"></div>
+
+      <!-- 6. 展开/折叠详细图层树 -->
+      <div id="toggleTreeBtn" class="tree-toggle-header">
+        <span style="display: flex; align-items: center; gap: 6px;">
+          <span id="treeToggleIcon" style="font-size: 9px; transition: transform 0.2s;">▶</span>
+          <span style="font-weight: 600;">74 个子图层细粒度树 (含 AP/BV/BK/BA...)</span>
+        </span>
+        <span id="visibleLayerCounter" class="counter-badge">529 / 529</span>
+      </div>
+
+      <!-- 细粒度图层树容器 (默认折叠) -->
+      <div id="layerTreeContainer" class="layer-tree-panel" style="display: none;">
+        <input type="text" id="layerSearchInput" class="tree-search-box" placeholder="🔍 搜索代码/名称/字段 (如 AP, BV, BK, 铁路, 南护城河, 北京)...">
+        <div id="treeCategoriesList"></div>
+      </div>
+
+      <!-- 7. 底栏统计与提示 -->
+      <div class="panel-footer">
+        <div class="stats-bar">
+          <span id="coordInfo">经度: 116.397 | 纬度: 39.909 | 级别: 14</span>
+          <span id="cacheRate">请求: 0 | 命中: 0%</span>
+        </div>
+        <div class="shortcut-hint">
+          <span>快捷键 <span class="kbd-key">[</span> 随时折叠/展开面板</span>
+          <span>点击地图要素可探查与精修样式 ➜</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右侧要素属性探查与实时样式自定义面板 -->
+  <div class="inspector-panel" id="inspectorPanel">
+    <div class="inspector-header">
+      <div class="inspector-tabs">
+        <button class="inspector-tab active" id="tabBtnAttr">📋 要素属性</button>
+        <button class="inspector-tab" id="tabBtnStyle">🎨 实时样式修改</button>
+      </div>
+      <button class="inspector-close" id="closeInspector" title="关闭面板">&times;</button>
+    </div>
+
+    <!-- Tab 1: 要素属性探查 -->
+    <div id="inspectorAttrPane" class="tab-pane active">
+      <div id="quickEditBar" style="display:none; flex-direction:column; gap:6px; margin-bottom:12px; background:var(--claude-accent-light); padding:10px 12px; border-radius:8px; border:1px solid var(--claude-accent-border);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:12px; font-weight:700; color:var(--claude-accent-deep);">🎨 命中样式层: <span id="quickLayerIdBadge" style="font-family:var(--font-mono); font-size:12px;">--</span></span>
+          <span id="quickLayerRoleBadge" class="badge" style="background:#EDE9FE; color:#5B21B6; font-size:9.5px;">--</span>
+        </div>
+        <div style="font-size:11px; color:var(--text-secondary);">
+          所属源层: <b id="quickSourceLayerName">--</b> | 几何类型: <span id="quickGeomType">--</span>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:2px;">
+          <button id="quickEditStyleFromFeatureBtn" class="style-btn primary" style="flex:1; padding:6px 10px; font-size:11px; cursor:pointer;">
+            ✏️ 精细修改此样式层 ➜
+          </button>
+          <button id="quickEditWholeSourceLayerBtn" class="style-btn" style="padding:6px 10px; font-size:11px; cursor:pointer;" title="同时修改该源层旗下所有样式层">
+            📦 批量修改整源层
+          </button>
+        </div>
+      </div>
+      <div id="inspectorContent">点击地图上的道路、建筑、水系或地名查看解码属性</div>
+    </div>
+
+    <!-- Tab 2: 实时样式修改与持久化 -->
+    <div id="inspectorStylePane" class="tab-pane">
+      <div class="style-editor-card">
+        <div class="style-target-header">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong id="styleTargetTitle" style="font-size:13px; color:var(--text-primary);">未选择目标图层</strong>
+            <span id="styleTargetGeom" class="badge">--</span>
+          </div>
+          <div class="style-target-badges">
+            <span id="styleTargetSl" class="badge">来源: --</span>
+            <span id="styleTargetModeBadge" class="badge" style="background:#E0E7FF; color:#3730A3;">精细样式层模式</span>
+            <span id="styleTargetLayerCount" class="badge" style="background:var(--claude-accent-light); color:var(--claude-accent-deep);">-- 个样式层</span>
+          </div>
+        </div>
+
+        <!-- 样式层下拉切换器 (529 个样式层自由切换) -->
+        <div id="styleLayerSelectBox" style="margin-bottom:10px; display:none;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label style="font-size:11px; font-weight:700; color:var(--text-secondary);">🎯 当前编辑的目标 (支持精细单层与批量):</label>
+          </div>
+          <select id="styleTargetLayerSelect" class="claude-input" style="width:100%; font-size:11px; padding:5px 8px; font-family:var(--font-mono); cursor:pointer; background:var(--bg-panel-solid); border:1px solid var(--border-subtle); border-radius:6px; color:var(--text-primary);"></select>
+        </div>
+
+        <!-- 动态控件区 (由 JS 根据 geometry 类型渲染) -->
+        <div id="styleControlsContainer">
+          <div style="font-size:11px; color:var(--text-muted); text-align:center; padding:16px 0;">
+            👈 请在左侧图层树中展开任意图层并点击 🎨，或在地图上点击具体道路/要素进行针对性精细修改。
+          </div>
+        </div>
+      </div>
+
+      <!-- 快捷经典调色盘 (12 种经典高颜值色) -->
+      <div style="font-size: 11px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px;">🎨 推荐调色盘 (一键取色)：</div>
+      <div class="swatches-grid" id="colorSwatches"></div>
+
+      <!-- 持久化与导入导出操作 -->
+      <div class="style-actions-grid">
+        <button class="style-btn primary" id="saveCustomStyleBtn">💾 保存为自定义配置并生效 (服务端持久化)</button>
+        <button class="style-btn" id="exportStyleConfigBtn">📥 导出配置 JSON</button>
+        <button class="style-btn" id="importStyleConfigBtn">📤 导入配置 JSON</button>
+        <input type="file" id="importStyleFileInput" accept=".json" style="display:none;">
+        <button class="style-btn" id="resetCurrentLayerBtn">↺ 恢复此层默认</button>
+        <button class="style-btn" id="resetAllCustomBtn" style="color:#DC2626;">⚠️ 重置所有自定义</button>
+      </div>
+      <div class="style-toast" id="styleToast"></div>
+    </div>
+  </div>
+
+  <!-- GIS 与 OpenLayers 客户端接入指引弹窗 (Claude Code 风格) -->
+  <div class="gis-modal-overlay" id="gisModalOverlay" style="display:none;">
+    <div class="gis-modal-card" style="max-width:680px;">
+      <div class="gis-modal-header">
+        <div class="gis-modal-title">
+          <span class="callout-badge">CLIENT INTEGRATION</span>
+          <h3>客户端生态集成指引 (OpenLayers / QGIS / ArcGIS / Web)</h3>
+        </div>
+        <button class="inspector-close" id="closeGisModal" style="cursor:pointer;">&times;</button>
+      </div>
+
+      <div class="gis-modal-tabs">
+        <button class="gis-tab-btn active" data-gistab="openlayers">OpenLayers (OL 矢量瓦片)</button>
+        <button class="gis-tab-btn" data-gistab="qgis">QGIS (开源桌面端)</button>
+        <button class="gis-tab-btn" data-gistab="arcgis">ArcGIS Pro (Esri 原生服务)</button>
+        <button class="gis-tab-btn" data-gistab="web">MapLibre / Cesium Web 端</button>
+      </div>
+
+      <!-- OpenLayers Pane (默认展示) -->
+      <div class="gis-pane active" id="pane-openlayers">
+        <div class="direct-callout" style="margin-bottom:12px;">
+          <div class="direct-callout-header">
+            <span class="callout-badge" style="background:#E2EDDF; color:#236E39; border-color:#BDDDB8;">官方生态推荐</span>
+            <span class="callout-title">方式一：ol-mapbox-style 一键渲染全量 529 层主题样式</span>
+          </div>
+          <div class="direct-callout-body">
+            1. 在项目中引入 <code>ol</code> (v10+) 与 <code>ol-mapbox-style</code> (olms)。<br>
+            2. 只需调用 <code>olms.apply(map, styleUrl)</code>，即可在 OpenLayers 画布上完美呈现与 MapLibre 完全一致的官方/高德/谷歌/暗黑/自定义矢量样式！
+          </div>
+        </div>
+
+        <div class="code-copy-row">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label style="margin:0;">OpenLayers + ol-mapbox-style 完整 HTML 运行模板：</label>
+            <button class="copy-btn" style="padding:3px 8px; font-size:10.5px;" onclick="copyCodeBlock('copyOlmsTemplate', this)">复制代码</button>
+          </div>
+          <pre class="code-block" id="copyOlmsTemplate" style="max-height:165px; overflow-y:auto; font-size:11px; line-height:1.45;"><code>&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;title&gt;OpenLayers 加载天地图矢量瓦片&lt;/title&gt;
+  &lt;link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v10.3.0/ol.css"&gt;
+  &lt;script src="https://cdn.jsdelivr.net/npm/ol@v10.3.0/dist/ol.js"&gt;&lt;/script&gt;
+  &lt;script src="https://cdn.jsdelivr.net/npm/ol-mapbox-style@12.3.0/dist/olms.js"&gt;&lt;/script&gt;
+  &lt;style&gt;html, body, #map { width:100%; height:100%; margin:0; }&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;div id="map"&gt;&lt;/div&gt;
+  &lt;script&gt;
+    const map = new ol.Map({
+      target: 'map',
+      view: new ol.View({ center: ol.proj.fromLonLat([116.397, 39.908]), zoom: 11 })
+    });
+    // 🌟 一键应用 VPS 标准样式文件 (支持 style.json, style-amap.json, style-custom.json)
+    olms.apply(map, '<span class="dynamic-endpoint-style">http://127.0.0.1:8890/style.json</span>')
+      .then(() =&gt; console.log('✅ OpenLayers 样式与矢量瓦片加载成功!'));
+  &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+        </div>
+
+        <div class="direct-callout" style="margin-top:12px; margin-bottom:12px;">
+          <div class="direct-callout-header">
+            <span class="callout-badge" style="background:#EBF3FC; color:#1D4ED8; border-color:#BFDBFE;">原生轻量</span>
+            <span class="callout-title">方式二：纯原生 OpenLayers (ol.layer.VectorTile + ol.format.MVT)</span>
+          </div>
+          <div class="direct-callout-body">
+            无任何外部样式库依赖，直接通过 OpenLayers 原生 <code>style</code> 函数对 74 个源层（如 <code>AA</code> 道路、<code>BM</code> 水系、<code>BV</code> 陆地）进行个性化着色与交互控制。
+          </div>
+        </div>
+
+        <div class="code-copy-row">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label style="margin:0;">纯原生 OpenLayers MVT 图层定义代码：</label>
+            <button class="copy-btn" style="padding:3px 8px; font-size:10.5px;" onclick="copyCodeBlock('copyOlRawCode', this)">复制代码</button>
+          </div>
+          <pre class="code-block" id="copyOlRawCode" style="max-height:140px; overflow-y:auto; font-size:11px; line-height:1.45;"><code>import VectorTileLayer from 'ol/layer/VectorTile.js';
+import VectorTileSource from 'ol/source/VectorTile.js';
+import MVT from 'ol/format/MVT.js';
+import { Stroke, Style } from 'ol/style.js';
+
+const vtLayer = new VectorTileLayer({
+  declutter: true,
+  source: new VectorTileSource({
+    format: new MVT(),
+    url: '<span class="dynamic-endpoint-mvt">http://127.0.0.1:8890/mvt/{z}/{x}/{y}</span>'
+  }),
+  style: function(feature) {
+    const sl = feature.get('layer'); // 获取天地图源层标识: AA, BM, BV, CE...
+    if (sl === 'AA') return new Style({ stroke: new Stroke({ color: '#f59e0b', width: 2 }) });
+  }
+});</code></pre>
+        </div>
+
+        <!-- 实时沙箱预览按钮与容器 -->
+        <div style="margin-top:14px; padding:10px; background:var(--bg-subtle); border-radius:8px; border:1px solid var(--border-subtle);">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <b style="font-size:11.5px; color:var(--text-primary);">🧪 OpenLayers 实时沙箱验证</b>
+              <div style="font-size:10.5px; color:var(--text-secondary);">在弹窗内直接拉起 OpenLayers 实例，现场检验矢量瓦片渲染</div>
+            </div>
+            <button class="claude-btn-subtle" id="startOlSandboxBtn" style="font-size:11px; padding:4px 10px; border:1px solid var(--claude-accent-border); color:var(--claude-accent-deep); background:var(--claude-accent-light); font-weight:600; cursor:pointer;">
+              ▶ 启动 OpenLayers 实时沙箱
+            </button>
+          </div>
+          <div id="olSandboxContainer" style="display:none; margin-top:10px;">
+            <div id="olSandboxMap" style="width:100%; height:220px; border-radius:6px; border:1px solid var(--border-hover); background:#f0ede6;"></div>
+            <div style="font-size:10px; color:var(--text-muted); margin-top:4px; text-align:right;">Powered by OpenLayers v10 &amp; ol-mapbox-style (实时双擎对照)</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- QGIS Pane -->
+      <div class="gis-pane" id="pane-qgis">
+        <div class="direct-callout" style="margin-bottom:12px;">
+          <div class="direct-callout-header">
+            <span class="callout-badge" style="background:#E2EDDF; color:#236E39; border-color:#BDDDB8;">推荐方法</span>
+            <span class="callout-title">方式一：TileJSON 规范直接连接（最简、最稳、绝不报错）</span>
+          </div>
+          <div class="direct-callout-body">
+            1. 在 QGIS 左侧【浏览器】面板中右键【Vector Tiles】->【新建通用连接 (New Generic Connection)】。<br>
+            2. 仅在 <b>URL</b> 处填入 TileJSON 地址，<b>Style URL 留空</b>，名称随意，点击确定即可！
+          </div>
+        </div>
+
+        <div class="code-copy-row">
+          <label>TileJSON URL (填入 QGIS 的 URL 字段):</label>
+          <div class="copy-input-group">
+            <input type="text" readonly value="http://127.0.0.1:8890/tilejson.json" id="copyTileJson">
+            <button class="copy-btn" onclick="copyFieldValue('copyTileJson', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="direct-callout" style="margin-top:14px; margin-bottom:12px;">
+          <div class="direct-callout-header">
+            <span class="callout-badge" style="background:#FBE9E7; color:#C62828; border-color:#FFCDD2;">避坑提示</span>
+            <span class="callout-title">方式二：XYZ 切片 + 样式（注意：切勿反填两项输入框！）</span>
+          </div>
+          <div class="direct-callout-body">
+            ⚠️ <b>QGIS 输入框排布陷阱</b>：QGIS 对话框上排是「样式 URL (Style URL)」，下排是「URL（切片数据）」。<br>
+            若颠倒填写，QGIS 会因切片源不含 <code>{x}/{y}/{z}</code> 而弹出 <code>Layer is not valid / Repair Data Source</code>！<br>
+            <i>（注：本服务已内置智能容错层，即使不小心颠倒填写亦能自愈兼容）</i>
+          </div>
+        </div>
+
+        <div class="code-copy-row">
+          <label>URL / 切片数据源 (填入 QGIS 下方的 URL 字段):</label>
+          <div class="copy-input-group">
+            <input type="text" readonly value="http://127.0.0.1:8890/mvt/{z}/{x}/{y}" id="copyMvtUrl">
+            <button class="copy-btn" onclick="copyFieldValue('copyMvtUrl', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="code-copy-row" style="margin-top:8px;">
+          <label>Style URL / 样式文件 (填入 QGIS 上方的 Style URL 字段):</label>
+          <div class="copy-input-group">
+            <input type="text" readonly value="http://127.0.0.1:8890/style.json" id="copyStyleUrl">
+            <button class="copy-btn" onclick="copyFieldValue('copyStyleUrl', this)">复制</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ArcGIS Pane -->
+      <div class="gis-pane" id="pane-arcgis">
+        <div class="direct-callout" style="margin-bottom:12px;">
+          <div class="direct-callout-header">
+            <span class="callout-badge" style="background:#E2EDDF; color:#236E39; border-color:#BDDDB8;">原生 REST 协议</span>
+            <span class="callout-title">从路径添加数据 (Add Data From Path)</span>
+          </div>
+          <div class="direct-callout-body">
+            1. 打开 ArcGIS Pro，进入顶部工具栏【地图 (Map)】。<br>
+            2. 点击【添加数据 (Add Data)】下拉箭头 -> 选择【从路径添加数据 (Data From Path)】。<br>
+            3. 将下方的 <code>VectorTileServer</code> 地址粘贴至输入框，点击【添加 (Add)】即可秒级渲染！
+          </div>
+        </div>
+
+        <div class="code-copy-row">
+          <label>ArcGIS Pro 矢量切片服务地址 (VectorTileServer):</label>
+          <div class="copy-input-group">
+            <input type="text" readonly value="http://127.0.0.1:8890/arcgis/rest/services/tdt/VectorTileServer" id="copyArcGisUrl">
+            <button class="copy-btn" onclick="copyFieldValue('copyArcGisUrl', this)">复制</button>
+          </div>
+        </div>
+
+        <div style="font-size:11px; color:var(--text-secondary); line-height:1.6; margin-top:12px; padding:10px; background:var(--bg-subtle); border-radius:6px; border:1px solid var(--border-subtle);">
+          💡 <b>ArcGIS Pro 兼容性说明</b>：<br>
+          • <b>完整 LODs 阵列</b>：内置 0-18 级 Web Mercator 空间分辨率与比例尺，精准缩放。<br>
+          • <b>未压缩 Protobuf 传输</b>：<code>tileCompression: "none"</code> 彻底解决 Esri Gzip 解码冲突。<br>
+          • <b>原生符号与样式</b>：自动挂载 <code>resources/styles/root.json</code> 与 <code>resources/sprites</code> 精灵图。
+        </div>
+      </div>
+
+      <!-- Web Pane -->
+      <div class="gis-pane" id="pane-web">
+        <div class="code-copy-row">
+          <label>MapLibre GL JS / Mapbox GL JS 接入示例：</label>
+          <pre class="code-block" id="copyWebCode"><code>const map = new maplibregl.Map({
+  container: 'map',
+  style: 'http://127.0.0.1:8890/style.json',
+  center: [116.397, 39.908],
+  zoom: 11
+});</code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 代理服务节点配置弹窗 (VPS / 本地 / GitHub Pages) -->
+  <div class="gis-modal-overlay" id="endpointModalOverlay" style="display:none;">
+    <div class="gis-modal-card" style="max-width:520px;">
+      <div class="gis-modal-header">
+        <div class="gis-modal-title">
+          <span class="callout-badge">ENDPOINT CONFIG</span>
+          <h3>代理服务节点配置 (VPS / 本地)</h3>
+        </div>
+        <button class="inspector-close" id="closeEndpointModal" style="cursor:pointer;">&times;</button>
+      </div>
+
+      <div class="direct-callout" style="margin-bottom:12px;">
+        <div class="direct-callout-header">
+          <span class="callout-badge" style="background:#EBF3FC; color:#1D4ED8; border-color:#BFDBFE;">多环境适用</span>
+          <span class="callout-title">灵活对接本地开发与 VPS 生产服务</span>
+        </div>
+        <div class="direct-callout-body">
+          • <b>本地开发环境</b>：默认连接 <code>http://127.0.0.1:8890</code>，享有本地磁盘秒级切片缓存。<br>
+          • <b>VPS 部署环境</b>：填入您的 VPS 域名或公网 IP（如 <code>https://mvt.your-domain.com</code>），供您的其它 OpenLayers 项目跨域直连。<br>
+          • <b>GitHub Pages 托管</b>：若未设置 VPS，示例页面将自动启用【方案一：纯前端直连自愈】；填入 VPS 地址即可即刻切换为【方案二：标准 MVT】。
+        </div>
+      </div>
+
+      <div class="code-copy-row">
+        <label>代理服务基址 (Service Base URL):</label>
+        <div class="copy-input-group">
+          <input type="text" id="endpointInput" placeholder="http://127.0.0.1:8890 或 https://mvt.yourdomain.com">
+          <button class="copy-btn" id="testSaveEndpointBtn">测试并应用</button>
+        </div>
+        <div id="endpointFeedbackMsg" style="font-size:11px; margin-top:6px; min-height:16px;"></div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; border-top:1px solid var(--border-subtle); padding-top:10px;">
+        <button class="claude-btn-subtle" id="resetEndpointBtn" style="font-size:11px; padding:4px 10px; cursor:pointer;">恢复默认 (同源)</button>
+        <button class="theme-btn active" id="closeEndpointConfirmBtn" style="font-size:11px; padding:5px 14px; cursor:pointer;">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentMode = 'proxy'; // 'proxy' (方案二本地代理) | 'direct' (方案一官方前端直连)
+    let currentTheme = 'default';
+    let currentToken = 'b88bfb160c81dab8d9d20aaa74846360';
+    let dictionary = {};
+
+    // 100% 涵盖所有 74 个 source-layer 与 529 个渲染图层的 9 大类专业分类字典
+    const CATEGORIES_CONFIG = {
+      land: {
+        id: 'land',
+        name: '陆地基底',
+        icon: '🌍',
+        sourceLayers: {
+          'background': { name: '背景画布海洋底色', geom: '面', fields: 'background-color' },
+          'BV': { name: '大陆/省份陆地基底面', geom: '面', fields: 'Z5(省名/国名)' },
+          'AP': { name: '街区单元/城市建成区', geom: '面', fields: 'objectid(地块ID)' },
+          'AL': { name: '商业/居住功能街区面', geom: '面', fields: '-' },
+          'Y3': { name: '小比例尺大洲区域面', geom: '面', fields: '-' },
+          'Y5': { name: '小比例尺陆地填充面', geom: '面', fields: '-' },
+          'Y6': { name: '中比例尺区域填充面', geom: '面', fields: '-' },
+          'Y9': { name: '低比例尺陆地基底面', geom: '面', fields: '-' }
+        }
+      },
+      water: {
+        id: 'water',
+        name: '水系水体',
+        icon: '🌊',
+        sourceLayers: {
+          'BM': { name: '大中型湖泊/水库水系面', geom: '面', fields: 'S8' },
+          'AR': { name: '江河湖海广域水面', geom: '面', fields: 'S8, Z8' },
+          'AN': { name: '河道水系边界轮廓线', geom: '线', fields: 'S8' },
+          'AW': { name: '中小比例尺河网线', geom: '线', fields: 'S8' },
+          'BK': { name: '河流中心线/运河水名', geom: '线/字', fields: 'S8(11护城河/15运河), Z5(水名)' },
+          'sea_poihy': { name: '海洋海峡/海湾群岛注记', geom: '点/字', fields: 'G6(海名)' }
+        }
+      },
+      green: {
+        id: 'green',
+        name: '绿地公园',
+        icon: '🌳',
+        sourceLayers: {
+          'CK': { name: '城市公园/绿地/林地自然面', geom: '面', fields: 'S8' }
+        }
+      },
+      building: {
+        id: 'building',
+        name: '建筑白模',
+        icon: '🏢',
+        sourceLayers: {
+          'CE': { name: '3D建筑轮廓与高度白模', geom: '面/立体', fields: 'h(高程), floor(层数), A6' },
+          'respt': { name: '建筑物楼栋号/门牌号', geom: '点/字', fields: 'lzh(楼号), elemid' }
+        }
+      },
+      road: {
+        id: 'road',
+        name: '道路路网',
+        icon: '🛣️',
+        sourceLayers: {
+          'AA': { name: '城市道路与主干道路网', geom: '线/字', fields: 'Z5(路名), J9(编号), X3' },
+          'AB': { name: '高缩放精细路段/人行道', geom: '线', fields: 'X3, V1, D3' },
+          'CC': { name: '中低比例尺高等级公路', geom: '线/标', fields: 'J9(路号), G6, JF' },
+          'AC': { name: '高等级匝道与立交桥', geom: '线', fields: '-' },
+          'CF': { name: '干道联络线与立交匝道', geom: '线', fields: '-' },
+          'AG': { name: '次级道路与县乡公路', geom: '线', fields: 'O4, A6' },
+          'AK': { name: '中等级别道路连接线', geom: '线', fields: '-' },
+          'AH': { name: '公路干线连接辅助线', geom: '线', fields: '-' },
+          'CH': { name: '道路辅助线与交叉口', geom: '线', fields: '-' },
+          'Q5': { name: '路网分流与引道连接', geom: '线', fields: '-' },
+          'Z7': { name: '特种道路连接辅助线', geom: '线', fields: '-' },
+          't8ji': { name: '8级辅助路网线', geom: '线', fields: '-' },
+          't9ji': { name: '9级辅助路网线', geom: '线', fields: '-' }
+        }
+      },
+      rail: {
+        id: 'rail',
+        name: '轨道交通',
+        icon: '🚆',
+        sourceLayers: {
+          'BA': { name: '国家铁路/普速高铁干线', geom: '线', fields: 'Z5(铁路名:如京沪线), A6' },
+          'tdt_ditie': { name: '城市轨道交通地铁线面', geom: '面/线', fields: '-' },
+          'tdt_ditie_poi': { name: '地铁出入口/轨道站点', geom: '点', fields: '-' }
+        }
+      },
+      boundary: {
+        id: 'boundary',
+        name: '行政境界',
+        icon: '🏛️',
+        sourceLayers: {
+          'AU': { name: '国家法定陆界与海岸线', geom: '线', fields: '-' },
+          'AV': { name: '省级行政区域界线', geom: '线', fields: '-' },
+          'BE': { name: '地级市与区县行政界线', geom: '线', fields: '-' },
+          'AE': { name: '特殊/争议行政管辖界线', geom: '线', fields: '-' },
+          'BG': { name: '国界线与特殊法定界', geom: '线', fields: '-' },
+          'huangyandao34': { name: '黄岩岛领海基线/海疆界', geom: '线', fields: '-' },
+          'Y1': { name: '1级国界与重要界线', geom: '线', fields: '-' },
+          'Y2': { name: '2级国界轮廓线', geom: '线', fields: '-' },
+          'Z1': { name: '九段线/海疆国界线', geom: '线', fields: '-' },
+          'Z2': { name: '特殊管辖界与海界线', geom: '线', fields: 'objectid' },
+          'Z6': { name: '海洋领海界线与断续线', geom: '线', fields: '-' },
+          'Z9': { name: '南海十段线/领海界线', geom: '线', fields: '-' }
+        }
+      },
+      place: {
+        id: 'place',
+        name: '行政地名',
+        icon: '🏷️',
+        sourceLayers: {
+          'BC': { name: '国家首都/直辖市大注记', geom: '点/字', fields: 'B7(地名:如北京), O4(级别:2直辖市)' },
+          'AF': { name: '省会城市与行政中心星标', geom: '点/字', fields: 'B7(省市名), O4, I8' },
+          'BW': { name: '乡镇/街道办事处驻地注记', geom: '点/字', fields: 'B7(地名), O4' },
+          'BL': { name: '地级市驻地注记', geom: '点/字', fields: 'B7(市名)' },
+          'BN': { name: '区县级行政驻地注记', geom: '点/字', fields: 'B7(区县名), S8' },
+          'CD': { name: '重要城镇/居民点注记', geom: '点/字', fields: 'B7(镇名)' },
+          'CJ': { name: '小比例尺重点城市注记', geom: '点/字', fields: 'B7' },
+          'AS': { name: '中级行政地名注记', geom: '点/字', fields: 'B7' },
+          'AT': { name: '地理分区/群岛行政地名', geom: '点/字', fields: 'B7' },
+          'BH': { name: '县市级通用地名注记', geom: '点/字', fields: 'B7' },
+          'BB': { name: '低缩放行政中心名称', geom: '点/字', fields: 'B7' },
+          'BF': { name: '省界周边重要行政注记', geom: '点/字', fields: 'B7' },
+          'country_3level_w_vec': { name: '世界国家名称大注记', geom: '点/字', fields: 'B7(国名)' },
+          'country_5level_w_vec': { name: '世界国家名称中注记', geom: '点/字', fields: 'B7(国名)' },
+          'AY': { name: '外国首都与主要都会注记', geom: '点/字', fields: 'B7(城市名)' },
+          'CB': { name: '外国重要大城市注记', geom: '点/字', fields: 'B7(城市名)' },
+          'BS': { name: '外国中等城市地名注记', geom: '点/字', fields: 'B7' },
+          'AZ': { name: '世界各大洲行政地名', geom: '点/字', fields: 'B7' },
+          'BT': { name: '外国地理单元名称注记', geom: '点/字', fields: 'B7' },
+          'BY': { name: '外国区域二级地名注记', geom: '点/字', fields: 'B7' },
+          'BZ': { name: '外国城镇微地名注记', geom: '点/字', fields: 'B7' },
+          'BQ': { name: '国际通用海峡洋区地名', geom: '点/字', fields: 'B7' },
+          'AI': { name: '外国山系与水系地理名', geom: '点/字', fields: 'Z5(名称)' }
+        }
+      },
+      poi: {
+        id: 'poi',
+        name: 'POI设施',
+        icon: '📍',
+        sourceLayers: {
+          'BI': { name: '公共设施/商业生活POI', geom: '点/标/字', fields: 'Z5(名称), S8, W2, P5' },
+          'AX': { name: '大型公共服务与文教设施', geom: '点/标/字', fields: 'Z5(学校/医院/博物馆)' },
+          'TA': { name: '国家级特级地标(天安门等)', geom: '点/标/字', fields: 'Z5(地标名)' },
+          'AJ': { name: '街巷街坊/村庄自然村POI', geom: '点/字', fields: 'Z5(村街名), S8' },
+          'CA': { name: '自然山峰/名胜景点地标', geom: '点/标/字', fields: 'Z5(山峰景点名), S8' },
+          'zangnan': { name: '中国藏南重要地理地标', geom: '点/字', fields: 'Z5(地标名)' }
+        }
+      }
+    };
+
+    // 记录每个 source-layer 的当前可见状态
+    const sourceLayerVisibility = {};
+    for (const cat of Object.values(CATEGORIES_CONFIG)) {
+      for (const sl of Object.keys(cat.sourceLayers)) {
+        sourceLayerVisibility[sl] = true;
+      }
+    }
+
+    // 获取当前应该加载的 Style URL
+    function getCurrentStyleUrl() {
+      const ep = getActiveEndpoint();
+      const tokenParam = currentToken ? `?tk=${encodeURIComponent(currentToken)}` : '';
+      if (currentMode === 'direct') {
+        return currentTheme === 'default' 
+          ? `${ep}/style-direct.json${tokenParam}` 
+          : `${ep}/style-direct-${currentTheme}.json${tokenParam}`;
+      } else {
+        return currentTheme === 'default' 
+          ? `${ep}/style.json${tokenParam}` 
+          : `${ep}/style-${currentTheme}.json${tokenParam}`;
+      }
+    }
+
+    // 1. 获取本地数据字典
+    fetch(`${getActiveEndpoint()}/api/dictionary`)
+      .then(r => r.json())
+      .then(data => {
+        dictionary = data.fields || {};
+        console.log('[App] 数据字典加载成功，字段数:', Object.keys(dictionary).length);
+      })
+      .catch(e => console.warn('[App] 获取字典失败:', e));
+
+    // 2. 注册天地图纯前端直连协议 (tdt-direct://)
+    // 浏览器直接向天地图官方发起请求，纯前端自动将 {z}/{x}/{y} 换算为 pk 空间四叉树编码（彻底规避 400 错误）
+    // 并在前端内存中解密转码为标准 MVT，直接支持 529 个图层样式完全自定义！
+    maplibregl.addProtocol('tdt-direct', async (requestParameters, abortController) => {
+      try {
+        const url = requestParameters.url;
+        const match = url.match(/tdt-direct:\/\/(\d+)\/(\d+)\/(\d+)/);
+        if (!match) return { data: new Uint8Array(0).buffer };
+
+        const z = parseInt(match[1], 10);
+        const x = parseInt(match[2], 10);
+        const y = parseInt(match[3], 10);
+        const tkMatch = url.match(/[?&]tk=([^&]+)/);
+        const tk = tkMatch ? decodeURIComponent(tkMatch[1]) : (currentToken || 'b88bfb160c81dab8d9d20aaa74846360');
+
+        if (isNaN(z) || isNaN(x) || isNaN(y)) {
+          return { data: new Uint8Array(0).buffer };
+        }
+
+        // 1. 核心关键：在前端动态将 (x, y, z) 换算为天地图官方必需的 pk (Morton QuadKey 编码)
+        const pk = window.TdtBrowserCodec.pkEncode(x, y, z);
+        const host = ['tile0.tianditu.gov.cn', 'tile1.tianditu.gov.cn', 'tile2.tianditu.gov.cn'][(x + y) % 3];
+        const officialUrl = `https://${host}/vts?t=vt&pk=${encodeURIComponent(pk)}&tk=${encodeURIComponent(tk)}&v=1.0`;
+
+        // 2. 浏览器直接向官方发起请求（支持跨域 CORS）
+        let resp;
+        try {
+          resp = await fetch(officialUrl, { signal: abortController.signal, mode: 'cors' });
+        } catch (err) {
+          console.warn(`[Direct] 官方直连 (${z}/${x}/${y}) 遇阻，尝试本地代理兜底:`, err.message);
+          const fallbackResp = await fetch(`${getActiveEndpoint()}/mvt/${z}/${x}/${y}?tk=${encodeURIComponent(tk)}`, { signal: abortController.signal });
+          const buf = await fallbackResp.arrayBuffer();
+          return { data: buf };
+        }
+
+        if (resp.status === 404 || !resp.ok) {
+          return { data: new Uint8Array(0).buffer };
+        }
+
+        const rawBytes = new Uint8Array(await resp.arrayBuffer());
+        if (!rawBytes || rawBytes.length === 0) {
+          return { data: new Uint8Array(0).buffer };
+        }
+
+        // 3. 浏览器纯前端内存解密与非标 Protobuf 转码
+        const browserBuf = window.TdtBrowserCodec.BrowserBuffer.from(rawBytes);
+        const layers = window.TdtBrowserCodec.decodeTiandituTile(browserBuf);
+        if (!layers || !layers.length) {
+          return { data: new Uint8Array(0).buffer };
+        }
+
+        // 4. 生成标准 MVT 2.1 ArrayBuffer 供给 MapLibre 渲染样式
+        const standardMvt = window.TdtBrowserCodec.encodeToStandardMVT(layers);
+        return { data: standardMvt.buffer };
+      } catch (e) {
+        if (e.name === 'AbortError') return { data: new Uint8Array(0).buffer };
+        console.error('[Direct Protocol Error]', e);
+        return { data: new Uint8Array(0).buffer };
+      }
+    });
+
+    // 3. 初始化 MapLibre 地图
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: getCurrentStyleUrl(),
+      center: [116.397455, 39.909187], // 北京天安门
+      zoom: 14,
+      minZoom: 1,
+      maxZoom: 18,
+      maxPitch: 85,
+      pitch: 0,
+      hash: true
+    });
+    window.map = map;
+
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
+    map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+    // 2.5D / 3D 立体俯仰视角快速切换交互
+    const toggle3dBtn = document.getElementById('toggle3dBtn');
+    if (toggle3dBtn) {
+      toggle3dBtn.addEventListener('click', () => {
+        const curPitch = map.getPitch();
+        if (curPitch < 20) {
+          map.easeTo({ pitch: 60, bearing: -15, duration: 900 });
+          toggle3dBtn.classList.add('active');
+          toggle3dBtn.textContent = '📐 平面 2D';
+        } else {
+          map.easeTo({ pitch: 0, bearing: 0, duration: 700 });
+          toggle3dBtn.classList.remove('active');
+          toggle3dBtn.textContent = '🏢 2.5D 立体';
+        }
+      });
+      map.on('pitch', () => {
+        const p = map.getPitch();
+        if (p >= 20 && !toggle3dBtn.classList.contains('active')) {
+          toggle3dBtn.classList.add('active');
+          toggle3dBtn.textContent = '📐 平面 2D';
+        } else if (p < 20 && toggle3dBtn.classList.contains('active')) {
+          toggle3dBtn.classList.remove('active');
+          toggle3dBtn.textContent = '🏢 2.5D 立体';
+        }
+      });
+    }
+
+    // 映射: 全局样式层字典与双向层级关系 (529 个样式层)
+    let slToLayerIds = {};
+    let slToLayers = {};
+    let allLayersById = {};
+
+    function getLayerRole(l) {
+      if (!l) return '';
+      const sl = l['source-layer'] || '';
+      const type = l.type;
+      const fStr = JSON.stringify(l.filter || []);
+      
+      if (type === 'background') return '底图海洋背景底色';
+      if (type === 'symbol') {
+        if (fStr.includes('J9') || fStr.includes('420101') || fStr.includes('420201') || fStr.includes('420801')) {
+          return '道路编号/盾牌注记';
+        }
+        if (sl === 'BC') return '行政区名/国名注记';
+        if (sl === 'BD' || sl === 'BE') return '区县街道/村庄注记';
+        if (sl === 'BI' || sl === 'BH' || sl === 'BG') return '水系/山脉自然注记';
+        if (sl.startsWith('B')) return 'POI/地名文字注记';
+        return '文字/符号注记';
+      }
+      if (type === 'line') {
+        const p = l.paint || {};
+        const c = JSON.stringify(p['line-color'] || '');
+        const isCasing = (p['line-dasharray'] || c.includes('209') || c.includes('208') || c.includes('200') || c.includes('198') || c.includes('125') || c.includes('225'));
+        if (sl === 'AA' || sl === 'AB' || sl === 'CC') {
+          if (c.includes('186,160,241') || c.includes('125,89,203') || c.includes('125, 89')) return '特殊快速路/主干道 (紫色)';
+          if (c.includes('254, 205') || c.includes('254,205') || c.includes('208, 143') || c.includes('208,143')) return '高速公路/干线 (橙黄)';
+          if (c.includes('255, 244') || c.includes('254, 240') || c.includes('254, 235')) return '城市主要干道 (浅黄)';
+          if (c.includes('255,255,255') || c.includes('255, 255')) return '城市道路芯线 (白色)';
+          if (isCasing) return '道路边框/底层轮廓线';
+          return '道路路网线条';
+        }
+        if (sl === 'BA') return '国家铁路干线';
+        if (sl === 'BB') return '地铁轨道轻轨线';
+        if (sl === 'BK') return '河流/水运航道线';
+        if (sl === 'BR') return '行政区界/国界线';
+        return '线性道路/界线';
+      }
+      if (type === 'fill') {
+        if (sl === 'BV' || sl === 'Y9' || sl === 'Y5' || sl === 'Y6') return '省区/国家陆地板块基底';
+        if (sl === 'AP') return '街区/城市建成区面';
+        if (sl === 'AL') return '商业/居住功能街区面';
+        if (sl === 'BM' || sl === 'AR') return '湖泊水系水体面';
+        if (sl === 'AG') return '绿地公园绿化面';
+        if (sl === 'AN' || sl === 'AO') return '建筑物/设施面';
+        return '多边形面域';
+      }
+      return type;
+    }
+
+    function getLayerPreviewColor(l) {
+      if (!l || !l.paint) return '#94A3B8';
+      const c = l.paint['line-color'] || l.paint['fill-color'] || l.paint['background-color'] || l.paint['text-color'];
+      if (typeof c === 'string') return c;
+      if (c && c.stops && Array.isArray(c.stops)) {
+        return c.stops[0][1];
+      }
+      return '#94A3B8';
+    }
+
+    function buildLayerMapping() {
+      const style = map.getStyle();
+      if (!style || !style.layers) return;
+      slToLayerIds = {};
+      slToLayers = {};
+      allLayersById = {};
+      for (const l of style.layers) {
+        allLayersById[l.id] = l;
+        const sl = l['source-layer'] || (l.type === 'background' ? 'background' : '__none__');
+        if (!slToLayerIds[sl]) {
+          slToLayerIds[sl] = [];
+          slToLayers[sl] = [];
+        }
+        slToLayerIds[sl].push(l.id);
+        slToLayers[sl].push(l);
+      }
+    }
+
+    function applyAllVisibility() {
+      if (!map.isStyleLoaded()) return;
+      buildLayerMapping();
+
+      let visibleCount = 0;
+      let totalCount = 0;
+
+      for (const [sl, isVisible] of Object.entries(sourceLayerVisibility)) {
+        const ids = slToLayerIds[sl] || [];
+        const vis = isVisible ? 'visible' : 'none';
+        for (const id of ids) {
+          totalCount++;
+          if (isVisible) visibleCount++;
+          map.setLayoutProperty(id, 'visibility', vis);
+        }
+      }
+
+      const counterEl = document.getElementById('visibleLayerCounter');
+      if (counterEl) counterEl.textContent = `${visibleCount} / ${totalCount}`;
+      const triggerBadge = document.getElementById('expandTriggerBadge');
+      if (triggerBadge) triggerBadge.textContent = `${visibleCount}层`;
+
+      updateCategoryChipsState();
+    }
+
+    map.on('style.load', () => {
+      buildLayerMapping();
+      renderUI();
+      applyAllVisibility();
+      applyCustomOverridesToMap();
+    });
+
+    map.on('move', () => {
+      const c = map.getCenter();
+      const z = map.getZoom().toFixed(1);
+      document.getElementById('coordInfo').textContent = 
+        `经度: ${c.lng.toFixed(4)} | 纬度: ${c.lat.toFixed(4)} | 级别: ${z}`;
+    });
+
+    // 3. 构建与渲染 UI 组件
+    function renderUI() {
+      renderCategoryChips();
+      renderTreeCategories();
+    }
+
+    function isCategoryActive(catId) {
+      const cat = CATEGORIES_CONFIG[catId];
+      if (!cat) return false;
+      const sls = Object.keys(cat.sourceLayers);
+      return sls.some(sl => sourceLayerVisibility[sl]);
+    }
+
+    function updateCategoryChipsState() {
+      document.querySelectorAll('.layer-chip').forEach(chip => {
+        const catId = chip.getAttribute('data-cat');
+        if (isCategoryActive(catId)) {
+          chip.classList.add('active');
+        } else {
+          chip.classList.remove('active');
+        }
+      });
+    }
+
+    function renderCategoryChips() {
+      const container = document.getElementById('categoryChips');
+      container.innerHTML = '';
+      for (const [catId, cat] of Object.entries(CATEGORIES_CONFIG)) {
+        const chip = document.createElement('div');
+        chip.className = `layer-chip ${isCategoryActive(catId) ? 'active' : ''}`;
+        chip.setAttribute('data-cat', catId);
+        chip.innerHTML = `${cat.icon} ${cat.name}`;
+        chip.addEventListener('click', () => {
+          const currentlyActive = isCategoryActive(catId);
+          const nextState = !currentlyActive;
+          for (const sl of Object.keys(cat.sourceLayers)) {
+            sourceLayerVisibility[sl] = nextState;
+            const cb = document.getElementById(`cb_sl_${sl}`);
+            if (cb) cb.checked = nextState;
+          }
+          const groupCb = document.getElementById(`cb_cat_${catId}`);
+          if (groupCb) groupCb.checked = nextState;
+          applyAllVisibility();
+        });
+        container.appendChild(chip);
+      }
+    }
+
+    function renderTreeCategories() {
+      const listContainer = document.getElementById('treeCategoriesList');
+      listContainer.innerHTML = '';
+
+      for (const [catId, cat] of Object.entries(CATEGORIES_CONFIG)) {
+        const groupEl = document.createElement('div');
+        groupEl.className = 'cat-group';
+        groupEl.setAttribute('data-cat-id', catId);
+
+        const slKeys = Object.keys(cat.sourceLayers);
+        let catStyleLayerCount = 0;
+        slKeys.forEach(sl => {
+          catStyleLayerCount += (slToLayerIds[sl] || []).length;
+        });
+
+        const headerEl = document.createElement('div');
+        headerEl.className = 'cat-group-header';
+        headerEl.innerHTML = `
+          <div class="cat-header-left">
+            <span class="cat-arrow" id="arrow_${catId}">▶</span>
+            <input type="checkbox" id="cb_cat_${catId}" ${isCategoryActive(catId) ? 'checked' : ''} style="cursor: pointer;">
+            <span>${cat.icon} ${cat.name}</span>
+          </div>
+          <span class="cat-count-badge">${slKeys.length} 源层 / ${catStyleLayerCount} 样式层</span>
+        `;
+
+        const itemsContainer = document.createElement('div');
+        itemsContainer.className = 'cat-item-list';
+        itemsContainer.id = `items_${catId}`;
+        itemsContainer.style.display = 'none';
+
+        for (const [sl, slMeta] of Object.entries(cat.sourceLayers)) {
+          const lCount = (slToLayerIds[sl] || []).length;
+          const layersInSl = slToLayers[sl] || [];
+
+          const slWrapper = document.createElement('div');
+          slWrapper.className = 'sl-item-wrapper';
+          slWrapper.style.marginBottom = '2px';
+
+          const row = document.createElement('div');
+          row.className = 'layer-item-row';
+          row.setAttribute('data-search-text', `${sl} ${slMeta.name} ${slMeta.fields} ${slMeta.geom}`.toLowerCase());
+          row.innerHTML = `
+            <div class="layer-item-left">
+              <button class="sl-expand-btn" id="arrow_sl_${sl}" title="展开/收起此源层下全部 ${lCount} 个具体样式层">▶</button>
+              <input type="checkbox" id="cb_sl_${sl}" ${sourceLayerVisibility[sl] ? 'checked' : ''} style="cursor: pointer;">
+              <span class="sl-code">${sl}</span>
+              <span class="sl-name">${slMeta.name}</span>
+              <span class="field-hint-text">[${slMeta.fields}]</span>
+            </div>
+            <div class="layer-item-right">
+              <span class="geom-tag">${slMeta.geom}</span>
+              <span class="layer-count-tag sl-count-click" id="tag_sl_${sl}" style="cursor:pointer;" title="点击展开查看并精细修改全部 ${lCount} 个具体样式层">${lCount}层 ▾</span>
+              <button class="sl-style-btn" title="批量联动修改 ${sl} 全部 ${lCount} 个样式层" data-sl="${sl}">🎨</button>
+            </div>
+          `;
+
+          // 第三级：具体样式层列表 (529 个样式层)
+          const sublayersContainer = document.createElement('div');
+          sublayersContainer.className = 'style-layer-list';
+          sublayersContainer.id = `style_layers_${sl}`;
+          sublayersContainer.style.display = 'none';
+
+          layersInSl.forEach(layer => {
+            const role = getLayerRole(layer);
+            const color = getLayerPreviewColor(layer);
+            const hexColor = parseColorToHex(color);
+            const isVisible = map.getLayoutProperty(layer.id, 'visibility') !== 'none';
+
+            const sRow = document.createElement('div');
+            sRow.className = 'style-layer-row';
+            sRow.setAttribute('data-layer-id', layer.id);
+            sRow.setAttribute('data-search-text', `${layer.id} ${role} ${sl} ${slMeta.name}`.toLowerCase());
+            sRow.innerHTML = `
+              <div class="style-layer-left">
+                <input type="checkbox" id="cb_layer_${layer.id}" ${isVisible ? 'checked' : ''} style="cursor: pointer;" title="显隐控制此单层">
+                <span class="style-swatch-mini" id="swatch_${layer.id}" style="background-color:${hexColor};" title="当前配色: ${color}"></span>
+                <span class="style-layer-id">${layer.id}</span>
+                <span class="style-layer-role" title="${role}">${role}</span>
+              </div>
+              <div class="style-layer-right">
+                <span class="zoom-badge">z${layer.minzoom || 1}-${layer.maxzoom || 19}</span>
+                <button class="layer-item-style-btn" id="btn_style_${layer.id}" title="精细定制此具体样式层 (${layer.id})">🎨</button>
+              </div>
+            `;
+
+            // 单个样式层独立显隐控制
+            const lcb = sRow.querySelector(`#cb_layer_${layer.id}`);
+            lcb.addEventListener('change', (e) => {
+              e.stopPropagation();
+              map.setLayoutProperty(layer.id, 'visibility', lcb.checked ? 'visible' : 'none');
+            });
+
+            // 单个样式层独立定制
+            const lStyleBtn = sRow.querySelector(`#btn_style_${layer.id}`);
+            lStyleBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              openStyleEditorForLayer(layer.id, sl, slMeta.name);
+            });
+
+            sublayersContainer.appendChild(sRow);
+          });
+
+          // 展开/收起具体样式层
+          const arrowBtn = row.querySelector(`#arrow_sl_${sl}`);
+          const countTag = row.querySelector(`#tag_sl_${sl}`);
+          const toggleSublayers = () => {
+            const isExpanded = sublayersContainer.style.display !== 'none';
+            sublayersContainer.style.display = isExpanded ? 'none' : 'flex';
+            arrowBtn.classList.toggle('open', !isExpanded);
+          };
+          arrowBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSublayers(); });
+          countTag.addEventListener('click', (e) => { e.stopPropagation(); toggleSublayers(); });
+
+          const cb = row.querySelector(`#cb_sl_${sl}`);
+          cb.addEventListener('change', (e) => {
+            e.stopPropagation();
+            sourceLayerVisibility[sl] = cb.checked;
+            applyAllVisibility();
+            sublayersContainer.querySelectorAll('input[type="checkbox"]').forEach(c => c.checked = cb.checked);
+          });
+
+          const styleBtn = row.querySelector('.sl-style-btn');
+          styleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openStyleEditorForSourceLayer(sl, slMeta.name, slMeta.geom);
+          });
+
+          slWrapper.appendChild(row);
+          slWrapper.appendChild(sublayersContainer);
+          itemsContainer.appendChild(slWrapper);
+        }
+
+        const groupCb = headerEl.querySelector(`#cb_cat_${catId}`);
+        groupCb.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const checked = groupCb.checked;
+          for (const sl of slKeys) {
+            sourceLayerVisibility[sl] = checked;
+            const cb = itemsContainer.querySelector(`#cb_sl_${sl}`);
+            if (cb) cb.checked = checked;
+            const subContainer = itemsContainer.querySelector(`#style_layers_${sl}`);
+            if (subContainer) subContainer.querySelectorAll('input[type="checkbox"]').forEach(c => c.checked = checked);
+          }
+          applyAllVisibility();
+        });
+
+        headerEl.addEventListener('click', () => {
+          const isOpen = itemsContainer.style.display === 'flex';
+          itemsContainer.style.display = isOpen ? 'none' : 'flex';
+          const arrow = headerEl.querySelector(`#arrow_${catId}`);
+          if (arrow) arrow.classList.toggle('open', !isOpen);
+        });
+
+        groupEl.appendChild(headerEl);
+        groupEl.appendChild(itemsContainer);
+        listContainer.appendChild(groupEl);
+      }
+    }
+
+    // 状态指示辅助函数
+    function updateProxyStatus(type, text) {
+      const el = document.getElementById('proxyStatus');
+      if (!el) return;
+      el.className = `status-badge status-${type}`;
+      el.textContent = text;
+      el.removeAttribute('style');
+    }
+
+    // 4. 方案模式切换 (方案二 本地代理 vs 方案一 官方前端直连)
+    const modeProxyBtn = document.getElementById('modeProxyBtn');
+    const modeDirectBtn = document.getElementById('modeDirectBtn');
+    const directConfigPanel = document.getElementById('directConfigPanel');
+
+    modeProxyBtn.addEventListener('click', () => {
+      if (currentMode === 'proxy') return;
+      currentMode = 'proxy';
+      modeProxyBtn.classList.add('active');
+      modeDirectBtn.classList.remove('active');
+      directConfigPanel.style.display = 'none';
+
+      updateProxyStatus('ok', '代理正常');
+      console.log('[Mode] 切换至方案二：本地代理中转模式');
+      map.setStyle(getCurrentStyleUrl());
+    });
+
+    modeDirectBtn.addEventListener('click', () => {
+      if (currentMode === 'direct') return;
+      currentMode = 'direct';
+      modeDirectBtn.classList.add('active');
+      modeProxyBtn.classList.remove('active');
+      directConfigPanel.style.display = 'block';
+
+      updateProxyStatus('direct', '前端直连');
+      console.log('[Mode] 切换至方案一：官方前端直连模式');
+      map.setStyle(getCurrentStyleUrl());
+    });
+
+    document.getElementById('applyDirectTokenBtn').addEventListener('click', () => {
+      const val = document.getElementById('directTokenInput').value.trim();
+      if (!val) {
+        alert('请输入有效的天地图 Token');
+        return;
+      }
+      currentToken = val;
+      console.log('[Token] 更新天地图 Token:', currentToken);
+      map.setStyle(getCurrentStyleUrl());
+    });
+
+    document.getElementById('quickBackToProxyBtn').addEventListener('click', () => {
+      modeProxyBtn.click();
+    });
+
+    // 4.5 控制面板整体平滑折叠与展开功能 (支持整体收起与快捷键 [ 或 \)
+    const topPanel = document.getElementById('topPanel');
+    const collapsePanelBtn = document.getElementById('collapsePanelBtn');
+    const expandPanelBtn = document.getElementById('expandPanelBtn');
+
+    function setPanelCollapsed(collapsed) {
+      if (!topPanel) return;
+      if (collapsed) {
+        topPanel.classList.add('collapsed');
+        document.body.classList.add('panel-is-collapsed');
+        localStorage.setItem('tdt_panel_collapsed', '1');
+      } else {
+        topPanel.classList.remove('collapsed');
+        document.body.classList.remove('panel-is-collapsed');
+        localStorage.setItem('tdt_panel_collapsed', '0');
+      }
+    }
+
+    if (collapsePanelBtn) {
+      collapsePanelBtn.addEventListener('click', () => setPanelCollapsed(true));
+    }
+    if (expandPanelBtn) {
+      expandPanelBtn.addEventListener('click', () => setPanelCollapsed(false));
+    }
+
+    // 快捷键: [ 或 \ 随时折叠/展开主控制面板
+    window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+      if (e.key === '[' || e.key === '\\') {
+        e.preventDefault();
+        const isCollapsed = topPanel && topPanel.classList.contains('collapsed');
+        setPanelCollapsed(!isCollapsed);
+      }
+    });
+
+    // 读取用户本地持久化偏好
+    if (localStorage.getItem('tdt_panel_collapsed') === '1') {
+      setPanelCollapsed(true);
+    }
+
+    // 5. 树形面板展开折叠与搜索
+    const toggleTreeBtn = document.getElementById('toggleTreeBtn');
+    const treeContainer = document.getElementById('layerTreeContainer');
+    const treeToggleIcon = document.getElementById('treeToggleIcon');
+
+    toggleTreeBtn.addEventListener('click', () => {
+      const isVisible = treeContainer.style.display !== 'none';
+      treeContainer.style.display = isVisible ? 'none' : 'block';
+      treeToggleIcon.style.transform = isVisible ? 'rotate(0deg)' : 'rotate(90deg)';
+    });
+
+    const searchInput = document.getElementById('layerSearchInput');
+    searchInput.addEventListener('input', () => {
+      const q = searchInput.value.trim().toLowerCase();
+      document.querySelectorAll('.cat-group').forEach(group => {
+        const catId = group.getAttribute('data-cat-id');
+        const slWrappers = group.querySelectorAll('.sl-item-wrapper');
+        let groupHasMatch = false;
+
+        slWrappers.forEach(wrapper => {
+          const slRow = wrapper.querySelector('.layer-item-row');
+          const subContainer = wrapper.querySelector('.style-layer-list');
+          const slTxt = slRow ? slRow.getAttribute('data-search-text') || '' : '';
+          let slHasMatch = !q || slTxt.includes(q);
+
+          // 深入检索具体样式层 (529 样式层 ID / 角色 / 备注)
+          let subMatchCount = 0;
+          if (subContainer) {
+            subContainer.querySelectorAll('.style-layer-row').forEach(sRow => {
+              const sTxt = sRow.getAttribute('data-search-text') || '';
+              if (!q || sTxt.includes(q)) {
+                sRow.style.display = 'flex';
+                subMatchCount++;
+              } else {
+                sRow.style.display = 'none';
+              }
+            });
+          }
+
+          if (q && subMatchCount > 0) {
+            slHasMatch = true;
+            if (subContainer) subContainer.style.display = 'flex';
+            const arr = wrapper.querySelector('.sl-expand-btn');
+            if (arr) arr.classList.add('open');
+          } else if (q && !slHasMatch) {
+            if (subContainer) subContainer.style.display = 'none';
+          }
+
+          if (slHasMatch) {
+            wrapper.style.display = 'block';
+            groupHasMatch = true;
+          } else {
+            wrapper.style.display = 'none';
+          }
+        });
+
+        const itemsEl = document.getElementById(`items_${catId}`);
+        const arrowEl = document.getElementById(`arrow_${catId}`);
+        if (q && groupHasMatch) {
+          group.style.display = 'block';
+          if (itemsEl) itemsEl.style.display = 'flex';
+          if (arrowEl) arrowEl.classList.add('open');
+        } else if (q && !groupHasMatch) {
+          group.style.display = 'none';
+        } else {
+          group.style.display = 'block';
+        }
+      });
+    });
+
+    document.getElementById('showAllLayersBtn').addEventListener('click', () => {
+      for (const sl of Object.keys(sourceLayerVisibility)) {
+        sourceLayerVisibility[sl] = true;
+        const cb = document.getElementById(`cb_sl_${sl}`);
+        if (cb) cb.checked = true;
+      }
+      document.querySelectorAll('[id^="cb_cat_"]').forEach(c => c.checked = true);
+      applyAllVisibility();
+    });
+
+    document.getElementById('hideAllLayersBtn').addEventListener('click', () => {
+      for (const sl of Object.keys(sourceLayerVisibility)) {
+        sourceLayerVisibility[sl] = false;
+        const cb = document.getElementById(`cb_sl_${sl}`);
+        if (cb) cb.checked = false;
+      }
+      document.querySelectorAll('[id^="cb_cat_"]').forEach(c => c.checked = false);
+      applyAllVisibility();
+    });
+
+    // 6. 主题切换
+    document.querySelectorAll('.theme-grid .theme-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.theme-grid .theme-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const theme = btn.getAttribute('data-theme');
+        if (!theme) return;
+        currentTheme = theme;
+
+        const styleUrl = getCurrentStyleUrl();
+        console.log('[App] 切换样式至:', styleUrl);
+        map.setStyle(styleUrl);
+      });
+    });
+
+    // 7. 错误捕获与提示
+    let retryTimer = null;
+    map.on('error', (e) => {
+      if (currentMode === 'direct') {
+        if (e && e.error && [400, 401, 403, 418].includes(e.error.status)) {
+          console.warn(`[Direct 400/WAF报错] 方案一直连天地图官方被拦截 (HTTP ${e.error.status})。根因分析：天地图官方 /vts 服务端只接收 pk (QuadKey 编码) 参数，不识别 {z}/{x}/{y}；且返回非标异或加密 TVT。建议立即切换至方案二！`, e.error);
+        }
+      } else {
+        if (e && e.error && [500, 502, 503, 504].includes(e.error.status)) {
+          if (!retryTimer) {
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              const src = map.getSource('base-tdt-vector-tile');
+              if (src && typeof src.reload === 'function') src.reload();
+            }, 1500);
+          }
+        }
+      }
+    });
+
+    const reloadBtn = document.getElementById('reloadTilesBtn');
+    if (reloadBtn) {
+      reloadBtn.addEventListener('click', () => {
+        reloadBtn.textContent = '⏳ 正在重试重载切片...';
+        const src = map.getSource('base-tdt-vector-tile');
+        if (src && typeof src.reload === 'function') {
+          src.reload();
+        } else {
+          map.setStyle(getCurrentStyleUrl());
+        }
+        setTimeout(() => {
+          reloadBtn.textContent = '🔄 刷新切片 / 立即重试兜底';
+        }, 1200);
+      });
+    }
+
+    // 8. 属性探查与实时样式定制器交互逻辑
+    const tabBtnAttr = document.getElementById('tabBtnAttr');
+    const tabBtnStyle = document.getElementById('tabBtnStyle');
+    const inspectorAttrPane = document.getElementById('inspectorAttrPane');
+    const inspectorStylePane = document.getElementById('inspectorStylePane');
+    const quickEditBar = document.getElementById('quickEditBar');
+
+    let activeStyleTarget = null; // { type: 'sourceLayer', sl: 'BV', name: '...', geom: '面', layerIds: [...] }
+    let lastClickedFeature = null;
+
+    // 自定义样式配置内存状态（支持按 source-layer 统一覆盖，及单个 layer-id 精确覆盖）
+    let customOverrides = {
+      sourceLayerOverrides: {},
+      layerOverrides: {}
+    };
+
+    // 推荐 12 种专业调色板高阶色
+    const PRESET_SWATCHES = [
+      '#4285F4', '#34A853', '#FBBC05', '#EA4335',
+      '#2563EB', '#059669', '#D97757', '#9333EA',
+      '#1E293B', '#475569', '#F1F5F9', '#FFFFFF'
+    ];
+
+    // 初始化调色板 DOM
+    function renderSwatches() {
+      const container = document.getElementById('colorSwatches');
+      if (!container) return;
+      container.innerHTML = '';
+      PRESET_SWATCHES.forEach(c => {
+        const sw = document.createElement('div');
+        sw.className = 'style-swatch';
+        sw.style.backgroundColor = c;
+        sw.title = `一键取色: ${c}`;
+        sw.addEventListener('click', () => {
+          const firstColorInput = document.querySelector('#styleControlsContainer .style-color-input');
+          if (firstColorInput) {
+            firstColorInput.value = c;
+            firstColorInput.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        });
+        container.appendChild(sw);
+      });
+    }
+    renderSwatches();
+
+    // Tab 切换事件
+    tabBtnAttr.addEventListener('click', () => {
+      tabBtnAttr.classList.add('active');
+      tabBtnStyle.classList.remove('active');
+      inspectorAttrPane.classList.add('active');
+      inspectorStylePane.classList.remove('active');
+    });
+
+    tabBtnStyle.addEventListener('click', () => {
+      tabBtnStyle.classList.add('active');
+      tabBtnAttr.classList.remove('active');
+      inspectorStylePane.classList.add('active');
+      inspectorAttrPane.classList.remove('active');
+    });
+
+    // 从要素中快捷进入样式编辑
+    document.getElementById('quickEditStyleFromFeatureBtn').addEventListener('click', () => {
+      if (lastClickedFeature) {
+        openStyleEditorForFeature(lastClickedFeature);
+      }
+    });
+
+    // 格式转换辅助：规范化 Hex 颜色
+    function parseColorToHex(str) {
+      if (!str) return '#3b82f6';
+      str = String(str).trim();
+      if (str.startsWith('#')) {
+        return str.length === 4 
+          ? `#${str[1]}${str[1]}${str[2]}${str[2]}${str[3]}${str[3]}` 
+          : str.substring(0, 7);
+      }
+      const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (m) {
+        const r = parseInt(m[1], 10).toString(16).padStart(2, '0');
+        const g = parseInt(m[2], 10).toString(16).padStart(2, '0');
+        const b = parseInt(m[3], 10).toString(16).padStart(2, '0');
+        return `#${r}${g}${b}`;
+      }
+      return '#3b82f6';
+    }
+
+    // 针对单个具体样式层 (529 个样式层之一) 打开编辑器
+    function openStyleEditorForLayer(layerId, sl, slName) {
+      const panel = document.getElementById('inspectorPanel');
+      panel.style.display = 'block';
+      tabBtnStyle.click();
+
+      const layerObj = allLayersById[layerId] || (map.isStyleLoaded() ? map.getLayer(layerId) : null);
+      if (!layerObj) return;
+
+      const layerSl = sl || layerObj['source-layer'] || '';
+      const geomType = layerObj.type === 'line' ? '线' : layerObj.type === 'fill' ? '面' : (layerObj.type === 'symbol' ? '点/注记' : '底图背景');
+
+      activeStyleTarget = {
+        type: 'layer',
+        layerId: layerId,
+        sl: layerSl,
+        name: slName || layerSl || layerId,
+        geom: geomType,
+        layerObj: layerObj,
+        role: getLayerRole(layerObj)
+      };
+
+      updateStyleEditorHeader();
+      populateLayerSwitcherDropdown(layerSl, layerId);
+      renderStyleEditorControls(activeStyleTarget);
+    }
+
+    // 针对源层批量联动 (例如 AA 全部 131 层) 打开编辑器
+    function openStyleEditorForSourceLayer(sl, name, geom) {
+      const panel = document.getElementById('inspectorPanel');
+      panel.style.display = 'block';
+      tabBtnStyle.click();
+
+      const layerIds = slToLayerIds[sl] || [];
+      activeStyleTarget = {
+        type: 'sourceLayer',
+        sl: sl,
+        name: name || sl,
+        geom: geom || '面',
+        layerIds: layerIds
+      };
+
+      updateStyleEditorHeader();
+      populateLayerSwitcherDropdown(sl, '__bulk__');
+      renderStyleEditorControls(activeStyleTarget);
+    }
+
+    // 针对点击要素打开编辑器 (优先针对点击命中的单个具体样式层！)
+    function openStyleEditorForFeature(feat) {
+      if (!feat || !feat.layer) return;
+      openStyleEditorForLayer(feat.layer.id, feat.layer['source-layer']);
+    }
+
+    // 更新右侧样式编辑器头部标识
+    function updateStyleEditorHeader() {
+      const titleEl = document.getElementById('styleTargetTitle');
+      const geomEl = document.getElementById('styleTargetGeom');
+      const slEl = document.getElementById('styleTargetSl');
+      const modeEl = document.getElementById('styleTargetModeBadge');
+      const countEl = document.getElementById('styleTargetLayerCount');
+
+      if (activeStyleTarget.type === 'layer') {
+        titleEl.textContent = `${activeStyleTarget.layerId}`;
+        const minz = activeStyleTarget.layerObj.minzoom || 1;
+        const maxz = activeStyleTarget.layerObj.maxzoom || 19;
+        geomEl.textContent = `${activeStyleTarget.geom} (z${minz}-${maxz})`;
+        slEl.textContent = `源层: ${activeStyleTarget.sl || '底图背景'}`;
+        modeEl.textContent = '🎯 精细单层定制';
+        modeEl.style.background = '#EDE9FE';
+        modeEl.style.color = '#5B21B6';
+        countEl.textContent = activeStyleTarget.role || '单个样式层';
+      } else {
+        titleEl.textContent = `${activeStyleTarget.sl} (${activeStyleTarget.name})`;
+        geomEl.textContent = activeStyleTarget.geom;
+        slEl.textContent = `源层: ${activeStyleTarget.sl}`;
+        modeEl.textContent = '⚡ 批量整源层联动';
+        modeEl.style.background = '#FEF3C7';
+        modeEl.style.color = '#92400E';
+        countEl.textContent = `${activeStyleTarget.layerIds.length} 个样式层`;
+      }
+    }
+
+    // 填充样式层下拉切换器
+    function populateLayerSwitcherDropdown(sl, selectedVal) {
+      const selectBox = document.getElementById('styleLayerSelectBox');
+      const selectEl = document.getElementById('styleTargetLayerSelect');
+      if (!selectBox || !selectEl) return;
+
+      selectBox.style.display = 'block';
+      selectEl.innerHTML = '';
+
+      const layers = slToLayers[sl] || [];
+
+      // 批量整源层选项
+      const bulkOpt = document.createElement('option');
+      bulkOpt.value = '__bulk__';
+      bulkOpt.textContent = `⚡ [批量模式] 同时联动修改 ${sl} 全部 ${layers.length} 个样式层`;
+      selectEl.appendChild(bulkOpt);
+
+      // 单个样式层选项列表
+      layers.forEach(l => {
+        const opt = document.createElement('option');
+        opt.value = l.id;
+        const role = getLayerRole(l);
+        opt.textContent = `🎯 ${l.id} [${l.type} z${l.minzoom||1}-${l.maxzoom||19}] ${role}`;
+        selectEl.appendChild(opt);
+      });
+
+      selectEl.value = selectedVal;
+
+      selectEl.onchange = () => {
+        const val = selectEl.value;
+        if (val === '__bulk__') {
+          openStyleEditorForSourceLayer(sl);
+        } else {
+          openStyleEditorForLayer(val, sl);
+        }
+      };
+    }
+
+    // 获取当前图层某属性现行值（支持具体样式层、源层批量，以及 stops 缩放插值计算）
+    function getCurrentPaintPropValue(target, prop, fallbackVal) {
+      if (target.type === 'layer') {
+        const lid = target.layerId;
+        if (customOverrides.layerOverrides && customOverrides.layerOverrides[lid] && customOverrides.layerOverrides[lid][prop] !== undefined) {
+          return customOverrides.layerOverrides[lid][prop];
+        }
+        if (customOverrides.sourceLayerOverrides && customOverrides.sourceLayerOverrides[target.sl] && customOverrides.sourceLayerOverrides[target.sl][prop] !== undefined) {
+          return customOverrides.sourceLayerOverrides[target.sl][prop];
+        }
+        try {
+          const val = map.getPaintProperty(lid, prop);
+          if (val !== undefined && val !== null) {
+            if (val && typeof val === 'object' && val.stops) {
+              const curZoom = map.getZoom();
+              let matched = val.stops[0][1];
+              for (const [z, v] of val.stops) {
+                if (curZoom >= z) matched = v;
+              }
+              return matched;
+            }
+            return val;
+          }
+        } catch(e) {}
+        return fallbackVal;
+      }
+
+      // 整源层批量
+      if (customOverrides.sourceLayerOverrides && customOverrides.sourceLayerOverrides[target.sl] && customOverrides.sourceLayerOverrides[target.sl][prop] !== undefined) {
+        return customOverrides.sourceLayerOverrides[target.sl][prop];
+      }
+      if (target.sl === 'background') {
+        try { return map.getPaintProperty('base-dynamic-tdt1', prop) || fallbackVal; } catch(e) { return fallbackVal; }
+      }
+      const lids = target.layerIds || [];
+      for (const lid of lids) {
+        try {
+          const val = map.getPaintProperty(lid, prop);
+          if (val !== undefined && val !== null) {
+            if (val && typeof val === 'object' && val.stops) {
+              return val.stops[0][1];
+            }
+            return val;
+          }
+        } catch(e) {}
+      }
+      return fallbackVal;
+    }
+
+    // 渲染动态样式控件
+    function renderStyleEditorControls(target) {
+      const container = document.getElementById('styleControlsContainer');
+      container.innerHTML = '';
+
+      const isPolygon = target.geom === '面' || target.sl === 'background' || (target.layerObj && target.layerObj.type === 'fill');
+      const isLine = target.geom === '线' || (target.layerObj && target.layerObj.type === 'line');
+      const isPoint = target.geom === '点' || target.geom === '点/注记' || (target.layerObj && target.layerObj.type === 'symbol');
+
+      // 1. 面图层 / 底图背景
+      if (isPolygon) {
+        const colorProp = (target.sl === 'background' || (target.layerObj && target.layerObj.type === 'background')) ? 'background-color' : 'fill-color';
+        const curColor = getCurrentPaintPropValue(target, colorProp, target.sl === 'background' ? 'rgba(170, 198, 238, 1)' : 'rgba(245, 244, 238, 1)');
+        const curOpacity = getCurrentPaintPropValue(target, 'fill-opacity', 1);
+        const curOutline = getCurrentPaintPropValue(target, 'fill-outline-color', 'rgba(0,0,0,0)');
+
+        container.appendChild(createColorControl('填充颜色 (' + colorProp + ')', colorProp, curColor, target));
+        if (target.sl !== 'background') {
+          container.appendChild(createSliderControl('不透明度 (fill-opacity)', 'fill-opacity', curOpacity, 0, 1, 0.05, target));
+          container.appendChild(createColorControl('边框轮廓线 (fill-outline-color)', 'fill-outline-color', curOutline, target));
+        }
+      } 
+      // 2. 线图层 (精细控制线宽、颜色、透明度)
+      else if (isLine) {
+        const curColor = getCurrentPaintPropValue(target, 'line-color', '#475569');
+        const curWidth = getCurrentPaintPropValue(target, 'line-width', 2);
+        const curOpacity = getCurrentPaintPropValue(target, 'line-opacity', 1);
+
+        container.appendChild(createColorControl('线条颜色 (line-color)', 'line-color', curColor, target));
+        container.appendChild(createSliderControl('线宽粗细 (line-width)', 'line-width', curWidth, 0.5, 20, 0.5, target, 'px'));
+        container.appendChild(createSliderControl('线条透明度 (line-opacity)', 'line-opacity', curOpacity, 0, 1, 0.05, target));
+      } 
+      // 3. 点与注记图层
+      else if (isPoint) {
+        const curColor = getCurrentPaintPropValue(target, 'text-color', '#1e293b');
+        const curHalo = getCurrentPaintPropValue(target, 'text-halo-color', '#ffffff');
+        const curHaloWidth = getCurrentPaintPropValue(target, 'text-halo-width', 1.5);
+
+        container.appendChild(createColorControl('文字颜色 (text-color)', 'text-color', curColor, target));
+        container.appendChild(createColorControl('文字描边光晕 (text-halo-color)', 'text-halo-color', curHalo, target));
+        container.appendChild(createSliderControl('光晕宽度 (text-halo-width)', 'text-halo-width', curHaloWidth, 0, 6, 0.5, target, 'px'));
+      }
+    }
+
+    // 辅助构建颜色控件（取色器 + 文本框双向同步）
+    function createColorControl(label, prop, initialVal, target) {
+      const grp = document.createElement('div');
+      grp.className = 'style-control-group';
+      const hex = parseColorToHex(initialVal);
+
+      grp.innerHTML = `
+        <div class="style-control-label">
+          <span>${label}</span>
+          <span class="style-val-badge">${escapeHtml(String(initialVal))}</span>
+        </div>
+        <div class="style-color-row">
+          <input type="color" class="style-color-input" value="${hex}">
+          <input type="text" class="style-text-input" value="${escapeHtml(String(initialVal))}" placeholder="例如 #2563EB 或 rgba(...)">
+        </div>
+      `;
+
+      const colorInput = grp.querySelector('.style-color-input');
+      const textInput = grp.querySelector('.style-text-input');
+      const badge = grp.querySelector('.style-val-badge');
+
+      colorInput.addEventListener('input', () => {
+        const val = colorInput.value;
+        textInput.value = val;
+        badge.textContent = val;
+        applyLiveStyleChange(target, prop, val);
+      });
+
+      textInput.addEventListener('change', () => {
+        const val = textInput.value.trim();
+        colorInput.value = parseColorToHex(val);
+        badge.textContent = val;
+        applyLiveStyleChange(target, prop, val);
+      });
+
+      return grp;
+    }
+
+    // 辅助构建滑块控件
+    function createSliderControl(label, prop, initialVal, min, max, step, target, unit = '') {
+      const grp = document.createElement('div');
+      grp.className = 'style-control-group';
+      const numVal = parseFloat(initialVal) || min;
+
+      grp.innerHTML = `
+        <div class="style-control-label">
+          <span>${label}</span>
+          <span class="style-val-badge">${numVal}${unit}</span>
+        </div>
+        <div class="style-slider-row">
+          <input type="range" class="style-slider" min="${min}" max="${max}" step="${step}" value="${numVal}">
+        </div>
+      `;
+
+      const slider = grp.querySelector('.style-slider');
+      const badge = grp.querySelector('.style-val-badge');
+
+      slider.addEventListener('input', () => {
+        const val = parseFloat(slider.value);
+        badge.textContent = `${val}${unit}`;
+        applyLiveStyleChange(target, prop, val);
+      });
+
+      return grp;
+    }
+
+    // 实时修改并零延迟应用至 WebGL 画布 (支持单一样式层与整源层批量)
+    function applyLiveStyleChange(target, prop, val) {
+      if (!target) return;
+
+      // 1. 单个具体样式层精细修改
+      if (target.type === 'layer') {
+        if (!customOverrides.layerOverrides) customOverrides.layerOverrides = {};
+        if (!customOverrides.layerOverrides[target.layerId]) {
+          customOverrides.layerOverrides[target.layerId] = {};
+        }
+        customOverrides.layerOverrides[target.layerId][prop] = val;
+
+        try {
+          map.setPaintProperty(target.layerId, prop, val);
+          if (prop.includes('color')) {
+            const swatch = document.getElementById(`swatch_${target.layerId}`);
+            if (swatch) swatch.style.backgroundColor = parseColorToHex(val);
+          }
+        } catch(e) {
+          console.warn(`[PaintError] 无法对 ${target.layerId} 应用 ${prop}:`, e);
+        }
+      } 
+      // 2. 整源层批量联动修改
+      else if (target.type === 'sourceLayer') {
+        if (!customOverrides.sourceLayerOverrides) customOverrides.sourceLayerOverrides = {};
+        if (!customOverrides.sourceLayerOverrides[target.sl]) {
+          customOverrides.sourceLayerOverrides[target.sl] = {};
+        }
+        customOverrides.sourceLayerOverrides[target.sl][prop] = val;
+
+        if (target.sl === 'background') {
+          try { map.setPaintProperty('base-dynamic-tdt1', 'background-color', val); } catch(e){}
+        } else {
+          (target.layerIds || []).forEach(lid => {
+            try {
+              map.setPaintProperty(lid, prop, val);
+              if (prop.includes('color')) {
+                const swatch = document.getElementById(`swatch_${lid}`);
+                if (swatch) swatch.style.backgroundColor = parseColorToHex(val);
+              }
+            } catch(e) {}
+          });
+        }
+      }
+    }
+
+    // 将 customOverrides 整体应用到当前已加载的地图样式上
+    function applyCustomOverridesToMap() {
+      if (!map || !map.isStyleLoaded()) return;
+      // 关键防护：只有在自定义主题 (custom) 模式下才应用 customOverrides，严禁污染官方原版与谷歌、高德、暗夜、科技等标准主题
+      if (currentTheme !== 'custom') return;
+
+      // 1. sourceLayerOverrides
+      for (const [sl, props] of Object.entries(customOverrides.sourceLayerOverrides || {})) {
+        if (sl === 'background') {
+          for (const [prop, val] of Object.entries(props)) {
+            try { map.setPaintProperty('base-dynamic-tdt1', prop, val); } catch(e){}
+          }
+        } else {
+          const lids = slToLayerIds[sl] || [];
+          for (const lid of lids) {
+            for (const [prop, val] of Object.entries(props)) {
+              try { map.setPaintProperty(lid, prop, val); } catch(e){}
+            }
+          }
+        }
+      }
+
+      // 2. layerOverrides (具体样式层精确覆盖，优先级更高！)
+      for (const [lid, props] of Object.entries(customOverrides.layerOverrides || {})) {
+        for (const [prop, val] of Object.entries(props)) {
+          try {
+            map.setPaintProperty(lid, prop, val);
+            if (prop.includes('color')) {
+              const swatch = document.getElementById(`swatch_${lid}`);
+              if (swatch) swatch.style.backgroundColor = parseColorToHex(val);
+            }
+          } catch(e){}
+        }
+      }
+    }
+
+    // 持久化保存至服务端 API
+    async function saveCustomStyleToServer() {
+      const toast = document.getElementById('styleToast');
+      toast.style.display = 'block';
+      toast.className = 'style-toast';
+      toast.textContent = '⏳ 正在保存配置并同步生成持久化样式文件...';
+
+      try {
+        const fullStyle = map.getStyle();
+        const payload = {
+          config: customOverrides,
+          fullStyle: fullStyle
+        };
+        const res = await fetch(`${getActiveEndpoint()}/api/save-style`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          toast.className = 'style-toast success';
+          toast.textContent = '✅ 已成功持久化至 static/custom-theme-config.json 与 style-custom.json！客户端可直连加载！';
+          document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+          const cBtn = document.getElementById('customThemeBtn');
+          if (cBtn) cBtn.classList.add('active');
+          currentTheme = 'custom';
+          setTimeout(() => { toast.style.display = 'none'; }, 4000);
+        } else {
+          throw new Error(data.error || '保存失败');
+        }
+      } catch (err) {
+        toast.style.display = 'block';
+        toast.style.background = '#FEE2E2';
+        toast.style.color = '#991B1B';
+        toast.style.border = '1px solid #FCA5A5';
+        toast.textContent = `❌ 保存失败: ${err.message}`;
+      }
+    }
+    document.getElementById('saveCustomStyleBtn').addEventListener('click', saveCustomStyleToServer);
+
+    // 导出配置 JSON
+    document.getElementById('exportStyleConfigBtn').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(customOverrides, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'custom-theme-config.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+
+    // 导入配置 JSON
+    const fileInput = document.getElementById('importStyleFileInput');
+    document.getElementById('importStyleConfigBtn').addEventListener('click', () => {
+      fileInput.click();
+    });
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        try {
+          const imported = JSON.parse(ev.target.result);
+          if (imported.sourceLayerOverrides || imported.layerOverrides) {
+            customOverrides = imported;
+          } else {
+            customOverrides = { sourceLayerOverrides: imported, layerOverrides: {} };
+          }
+          applyCustomOverridesToMap();
+          if (activeStyleTarget) renderStyleEditorControls(activeStyleTarget);
+          await saveCustomStyleToServer();
+          alert('🎉 配置文件导入成功并已应用！');
+        } catch (err) {
+          alert(`导入失败: ${err.message}`);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    // 恢复当前图层默认样式
+    document.getElementById('resetCurrentLayerBtn').addEventListener('click', () => {
+      if (!activeStyleTarget) return;
+      if (activeStyleTarget.type === 'layer') {
+        if (customOverrides.layerOverrides) {
+          delete customOverrides.layerOverrides[activeStyleTarget.layerId];
+        }
+      } else {
+        if (customOverrides.sourceLayerOverrides) {
+          delete customOverrides.sourceLayerOverrides[activeStyleTarget.sl];
+        }
+      }
+      map.setStyle(getCurrentStyleUrl());
+      setTimeout(() => {
+        if (activeStyleTarget) renderStyleEditorControls(activeStyleTarget);
+      }, 300);
+    });
+
+    // 恢复所有自定义修改
+    document.getElementById('resetAllCustomBtn').addEventListener('click', () => {
+      if (!confirm('确定要清空所有自定义样式修改并恢复官方默认原版吗？')) return;
+      customOverrides = { sourceLayerOverrides: {}, layerOverrides: {} };
+      map.setStyle(getCurrentStyleUrl());
+      const toast = document.getElementById('styleToast');
+      toast.style.display = 'block';
+      toast.className = 'style-toast';
+      toast.textContent = '🔄 所有自定义修改已恢复默认。';
+      setTimeout(() => { toast.style.display = 'none'; }, 2000);
+    });
+
+    // 页面启动时自动拉取现有服务端保存的自定义配置
+    fetch(`${getActiveEndpoint()}/api/custom-config`)
+      .then(r => r.json())
+      .then(cfg => {
+        if (cfg && (cfg.sourceLayerOverrides || cfg.layerOverrides)) {
+          customOverrides = cfg;
+          console.log('[CustomConfig] 加载现有持久化配置成功:', customOverrides);
+          applyCustomOverridesToMap();
+        }
+      })
+      .catch(() => {});
+
+    // 地图点击：探查要素属性 + 激活快速样式修改按钮 (双按钮：精细单层定制 + 批量整源层联动)
+    map.on('click', (e) => {
+      const bbox = [[e.point.x - 4, e.point.y - 4], [e.point.x + 4, e.point.y + 4]];
+      const features = map.queryRenderedFeatures(bbox);
+      if (!features || features.length === 0) return;
+
+      const feat = features.find(f => f.properties && Object.keys(f.properties).length > 0) || features[0];
+      lastClickedFeature = feat;
+
+      const panel = document.getElementById('inspectorPanel');
+      const content = document.getElementById('inspectorContent');
+
+      // 默认切换到属性页并显示快捷编辑栏
+      tabBtnAttr.click();
+      quickEditBar.style.display = 'flex';
+
+      const layerObj = allLayersById[feat.layer.id] || feat.layer;
+      const role = getLayerRole(layerObj);
+      const sl = feat.layer['source-layer'] || '底图背景';
+
+      document.getElementById('quickLayerIdBadge').textContent = feat.layer.id;
+      document.getElementById('quickLayerRoleBadge').textContent = role;
+      document.getElementById('quickSourceLayerName').textContent = sl;
+      document.getElementById('quickGeomType').textContent = feat.geometry.type;
+
+      // 按钮 1: 精细修改此样式层
+      const singleBtn = document.getElementById('quickEditStyleFromFeatureBtn');
+      singleBtn.onclick = () => {
+        openStyleEditorForLayer(feat.layer.id, sl);
+      };
+
+      // 按钮 2: 批量联动整源层
+      const wholeBtn = document.getElementById('quickEditWholeSourceLayerBtn');
+      wholeBtn.onclick = () => {
+        openStyleEditorForSourceLayer(sl);
+      };
+
+      let html = `<table class="prop-table">`;
+      html += `<tr><th>图层 ID (Style Layer)</th><td><b>${feat.layer.id}</b></td></tr>`;
+      html += `<tr><th>图层角色定位</th><td><span class="style-layer-role" style="font-size:11px; padding:2px 6px;">${role}</span></td></tr>`;
+      html += `<tr><th>来源层 (source-layer)</th><td><span class="sl-code">${feat.layer['source-layer'] || '-'}</span></td></tr>`;
+      html += `<tr><th>几何类型</th><td>${feat.geometry.type}</td></tr>`;
+
+      const props = feat.properties || {};
+      const keys = Object.keys(props);
+
+      if (keys.length === 0) {
+        html += `<tr><td colspan="2" style="text-align:center;color:var(--text-muted);padding:12px;">该要素无附加属性</td></tr>`;
+      } else {
+        keys.sort().forEach(k => {
+          const dictEntry = dictionary[k];
+          const zhName = dictEntry ? dictEntry.zh : k;
+          const note = dictEntry ? ` (${dictEntry.use || dictEntry.note || ''})` : '';
+          const val = props[k];
+
+          html += `<tr>
+            <th>
+              <span class="field-zh">${zhName}</span>
+              <span class="field-raw">[${k}]</span>
+              <div style="font-size:9.5px;color:var(--text-muted);font-weight:normal;margin-top:2px;">${note}</div>
+            </th>
+            <td><b>${escapeHtml(String(val))}</b></td>
+          </tr>`;
+        });
+      }
+
+      html += `</table>`;
+      content.innerHTML = html;
+      panel.style.display = 'block';
+    });
+
+    document.getElementById('closeInspector').addEventListener('click', () => {
+      document.getElementById('inspectorPanel').style.display = 'none';
+    });
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // 8.5 GIS 接入弹窗控制
+    const gisModal = document.getElementById('gisModalOverlay');
+    document.getElementById('openGisModalBtn').addEventListener('click', () => {
+      gisModal.style.display = 'flex';
+    });
+    document.getElementById('closeGisModal').addEventListener('click', () => {
+      gisModal.style.display = 'none';
+    });
+    gisModal.addEventListener('click', (e) => {
+      if (e.target === gisModal) gisModal.style.display = 'none';
+    });
+
+    document.querySelectorAll('.gis-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.gis-tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.gis-pane').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        const tabKey = btn.getAttribute('data-gistab');
+        const targetPane = document.getElementById(`pane-${tabKey}`);
+        if (targetPane) targetPane.classList.add('active');
+      });
+    });
+
+    window.copyFieldValue = function(inputId, btn) {
+      const el = document.getElementById(inputId);
+      if (!el) return;
+      el.select();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(el.value).then(() => {
+          const orig = btn.textContent;
+          btn.textContent = '✓ 已复制';
+          btn.style.background = '#2E7D32';
+          setTimeout(() => {
+            btn.textContent = orig;
+            btn.style.background = '';
+          }, 1500);
+        }).catch(() => {
+          document.execCommand('copy');
+          btn.textContent = '✓ 已复制';
+          setTimeout(() => { btn.textContent = '复制'; }, 1500);
+        });
+      } else {
+        document.execCommand('copy');
+        btn.textContent = '✓ 已复制';
+        setTimeout(() => { btn.textContent = '复制'; }, 1500);
+      }
+    };
+
+    window.copyCodeBlock = function(blockId, btn) {
+      const el = document.getElementById(blockId);
+      if (!el) return;
+      const text = el.innerText || el.textContent;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          const orig = btn.textContent;
+          btn.textContent = '✓ 已复制代码';
+          btn.style.background = '#2E7D32';
+          setTimeout(() => {
+            btn.textContent = orig;
+            btn.style.background = '';
+          }, 1500);
+        });
+      }
+    };
+
+    // 8.6 代理服务基址 (Endpoint) 管理与多环境自适应
+    function getActiveEndpoint() {
+      // 动态推导当前页面所在的基址路径（自动识别 /tdt-mvt/ 等反代子路径，移除末尾文件名）
+      let autoBase = '';
+      if (window.location.protocol === 'file:' || window.location.hostname.includes('github.io')) {
+        autoBase = 'http://127.0.0.1:8890'; // 静态环境默认展示占位基址
+      } else {
+        let basePath = window.location.pathname || '';
+        basePath = basePath.replace(/\/[^/]*\.[^/]+$/, '');
+        basePath = basePath.replace(/\/+$/, '');
+        autoBase = window.location.origin + basePath;
+      }
+
+      const custom = localStorage.getItem('tdt_proxy_endpoint');
+      if (custom && custom.trim()) {
+        const c = custom.trim().replace(/\/+$/, '');
+        // 关键容错自愈：若之前在弹窗存过无子路径的旧域名（如 https://vpn.negiao.cn），且当前实际位于 /tdt-mvt 下，自动补齐子路径
+        if (window.location.pathname.startsWith('/tdt-mvt') && !c.includes('/tdt-mvt')) {
+          localStorage.setItem('tdt_proxy_endpoint', c + '/tdt-mvt');
+          return c + '/tdt-mvt';
+        }
+        return c;
+      }
+      return autoBase;
+    }
+
+    function updateEndpointDisplayUrls() {
+      const ep = getActiveEndpoint();
+      const styleUrl = `${ep}/style.json`;
+      const mvtUrl = `${ep}/mvt/{z}/{x}/{y}`;
+      const tileJsonUrl = `${ep}/tilejson.json`;
+      const arcgisUrl = `${ep}/arcgis/rest/services/tdt/VectorTileServer`;
+
+      const tJsonEl = document.getElementById('copyTileJson');
+      if (tJsonEl) tJsonEl.value = tileJsonUrl;
+      const mvtEl = document.getElementById('copyMvtUrl');
+      if (mvtEl) mvtEl.value = mvtUrl;
+      const stEl = document.getElementById('copyStyleUrl');
+      if (stEl) stEl.value = styleUrl;
+      const agEl = document.getElementById('copyArcGisUrl');
+      if (agEl) agEl.value = arcgisUrl;
+
+      // 更新代码块内的动态基址
+      document.querySelectorAll('.dynamic-endpoint-style').forEach(el => { el.textContent = styleUrl; });
+      document.querySelectorAll('.dynamic-endpoint-mvt').forEach(el => { el.textContent = mvtUrl; });
+      const webCode = document.getElementById('copyWebCode');
+      if (webCode) {
+        webCode.querySelector('code').textContent = `const map = new maplibregl.Map({
+  container: 'map',
+  style: '${styleUrl}',
+  center: [116.397, 39.908],
+  zoom: 11
+});`;
+      }
+    }
+    updateEndpointDisplayUrls();
+
+    // 8.7 节点设置弹窗逻辑
+    const endpointModal = document.getElementById('endpointModalOverlay');
+    const endpointInput = document.getElementById('endpointInput');
+    const endpointMsg = document.getElementById('endpointFeedbackMsg');
+
+    document.getElementById('openEndpointModalBtn').addEventListener('click', () => {
+      endpointModal.style.display = 'flex';
+      endpointInput.value = localStorage.getItem('tdt_proxy_endpoint') || getActiveEndpoint();
+      endpointMsg.textContent = '';
+    });
+    document.getElementById('closeEndpointModal').addEventListener('click', () => {
+      endpointModal.style.display = 'none';
+    });
+    document.getElementById('closeEndpointConfirmBtn').addEventListener('click', () => {
+      endpointModal.style.display = 'none';
+    });
+    endpointModal.addEventListener('click', (e) => {
+      if (e.target === endpointModal) endpointModal.style.display = 'none';
+    });
+
+    document.getElementById('testSaveEndpointBtn').addEventListener('click', async () => {
+      const val = endpointInput.value.trim().replace(/\/+$/, '');
+      if (!val) {
+        endpointMsg.innerHTML = '<span style="color:#DC2626;">❌ 请输入有效的服务 URL (例如 http://127.0.0.1:8890 或 https://mvt.yourdomain.com)</span>';
+        return;
+      }
+      endpointMsg.innerHTML = '<span style="color:#D97757;">⏳ 正在探测节点连通性...</span>';
+      const t0 = performance.now();
+      try {
+        const res = await fetch(`${val}/api/status`, { mode: 'cors' });
+        const cost = Math.round(performance.now() - t0);
+        if (res.ok) {
+          const info = await res.json();
+          localStorage.setItem('tdt_proxy_endpoint', val);
+          endpointMsg.innerHTML = `<span style="color:#16A34A;">✅ 连接成功 (延迟 ${cost}ms)！已保存为默认代理节点。</span>`;
+          updateEndpointDisplayUrls();
+          if (currentMode === 'proxy') {
+            updateProxyStatus('ok', 'VPS 正常');
+          }
+        } else {
+          endpointMsg.innerHTML = `<span style="color:#DC2626;">⚠️ 节点响应 HTTP ${res.status}，已保存。请确认服务端是否正确开启 CORS。</span>`;
+          localStorage.setItem('tdt_proxy_endpoint', val);
+          updateEndpointDisplayUrls();
+        }
+      } catch (err) {
+        endpointMsg.innerHTML = `<span style="color:#DC2626;">❌ 无法连接该节点: ${err.message}。若跨域受阻，请确保 VPS 开启了 Access-Control-Allow-Origin: *</span>`;
+      }
+    });
+
+    document.getElementById('resetEndpointBtn').addEventListener('click', () => {
+      localStorage.removeItem('tdt_proxy_endpoint');
+      endpointInput.value = getActiveEndpoint();
+      endpointMsg.innerHTML = '<span style="color:#16A34A;">已重置为当前网页同源基址。</span>';
+      updateEndpointDisplayUrls();
+    });
+
+    // 8.8 OpenLayers 实时沙箱沙盒加载器
+    let olSandboxMapInstance = null;
+    document.getElementById('startOlSandboxBtn').addEventListener('click', async function() {
+      const btn = this;
+      const box = document.getElementById('olSandboxContainer');
+      box.style.display = 'block';
+
+      if (olSandboxMapInstance) {
+        btn.textContent = '🔄 刷新 OpenLayers 视图';
+        olSandboxMapInstance.updateSize();
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = '⏳ 正在加载 OpenLayers 运行时...';
+
+      // 动态加载 OpenLayers 与 olms
+      const loadScript = (src) => new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) return resolve();
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+
+      const loadCss = (href) => {
+        if (document.querySelector(`link[href="${href}"]`)) return;
+        const l = document.createElement('link');
+        l.rel = 'stylesheet';
+        l.href = href;
+        document.head.appendChild(l);
+      };
+
+      try {
+        loadCss('https://cdn.jsdelivr.net/npm/ol@v10.3.0/ol.css');
+        await loadScript('https://cdn.jsdelivr.net/npm/ol@v10.3.0/dist/ol.js');
+        await loadScript('https://cdn.jsdelivr.net/npm/ol-mapbox-style@12.3.0/dist/olms.js');
+
+        const ep = getActiveEndpoint();
+        const styleUrl = `${ep}/style.json`;
+
+        olSandboxMapInstance = new ol.Map({
+          target: 'olSandboxMap',
+          view: new ol.View({
+            center: ol.proj.fromLonLat([116.3974, 39.9092]),
+            zoom: 11
+          })
+        });
+
+        await olms.apply(olSandboxMapInstance, styleUrl);
+        btn.disabled = false;
+        btn.textContent = '✅ OpenLayers 运行中 (点击刷新)';
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = '❌ 加载失败，点击重试';
+        console.error('[OL Sandbox Error]', err);
+      }
+    });
+
+    // 8.9 GitHub Pages 静态环境自动检测
+    if (window.location.hostname.includes('github.io')) {
+      const hasCustomVps = !!localStorage.getItem('tdt_proxy_endpoint');
+      if (!hasCustomVps) {
+        console.log('[App] 检测到处于 GitHub Pages 静态托管环境，默认切换为方案一（前端直连自愈）');
+        // 自动切换为直连模式
+        setTimeout(() => {
+          const directBtn = document.getElementById('modeDirectBtn');
+          if (directBtn) directBtn.click();
+          updateProxyStatus('ok', '静态演示 (直连)');
+        }, 100);
+      }
+    }
+
+    // 9. 状态指标轮询
+    setInterval(async () => {
+      const ep = getActiveEndpoint();
+      if (!ep) return;
+      try {
+        const res = await fetch(`${ep}/api/status`);
+        if (res.ok) {
+          const data = await res.json();
+          const rate = data.stats.totalRequests > 0 
+            ? Math.round((data.stats.cacheHits / data.stats.totalRequests) * 100) 
+            : 0;
+          document.getElementById('cacheRate').textContent = 
+            `请求: ${data.stats.totalRequests} | 命中: ${rate}% (${data.cacheFilesCount} 块)`;
+          if (currentMode === 'proxy') {
+            updateProxyStatus('ok', '代理正常');
+          }
+        }
+      } catch (e) {
+        if (currentMode === 'proxy') {
+          updateProxyStatus('error', '连接断开');
+        }
+      }
+    }, 3000);
+  </script>
+</body>
+</html>

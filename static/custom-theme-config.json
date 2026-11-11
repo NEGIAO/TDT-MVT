@@ -1,0 +1,14 @@
+{
+  "name": "测试细粒度样式层配置",
+  "layerOverrides": {
+    "base-dynamic-tdt119": {
+      "line-color": "#BAA0F1",
+      "line-width": 3.5
+    }
+  },
+  "sourceLayerOverrides": {
+    "BV": {
+      "fill-color": "rgba(250, 245, 240, 1)"
+    }
+  }
+}
